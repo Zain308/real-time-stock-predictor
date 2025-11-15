@@ -1,9 +1,9 @@
 import os
 import queue
 from dotenv import load_dotenv
-# --- FIX: Import the Binance.US WebSocket Manager and Client ---
-from binance.us import ThreadedWebsocketManager
-from binance.us.client import Client
+# --- FIX: Import the ORIGINAL WebSocket Manager and Client ---
+from binance import ThreadedWebsocketManager
+from binance.client import Client
 
 class BinanceStreamer:
     """
@@ -14,8 +14,8 @@ class BinanceStreamer:
         self.api_key = os.environ.get("BINANCE_API_KEY")
         self.api_secret = os.environ.get("BINANCE_API_SECRET")
         
-        # --- FIX: Initialize the Binance.US WebSocket Manager with keys ---
-        self.twm = ThreadedWebsocketManager(api_key=self.api_key, api_secret=self.api_secret)
+        # --- FIX: Initialize the WebSocket Manager with tld='us' ---
+        self.twm = ThreadedWebsocketManager(tld='us')
         self.queue = data_queue
         self.symbol = 'BTCUSDT'
         print("Binance.US Streamer initialized.")
@@ -24,19 +24,18 @@ class BinanceStreamer:
         """
         Callback function to handle incoming kline messages.
         """
-        if msg['e'] == 'kline':
-            kline = msg['k']
-            if kline['i'] == '1m':
-                if kline['x']: # If the kline is closed
-                    processed_data = {
-                        'time': int(kline['t']),
-                        'open': float(kline['o']),
-                        'high': float(kline['h']),
-                        'low': float(kline['l']),
-                        'close': float(kline['c']),
-                        'volume': float(kline['v'])
-                    }
-                    self.queue.put(processed_data)
+        if msg.get('e') == 'kline':
+            kline = msg.get('k', {})
+            if kline.get('i') == '1m' and kline.get('x'): # If the kline is closed
+                processed_data = {
+                    'time': int(kline['t']),
+                    'open': float(kline['o']),
+                    'high': float(kline['h']),
+                    'low': float(kline['l']),
+                    'close': float(kline['c']),
+                    'volume': float(kline['v'])
+                }
+                self.queue.put(processed_data)
 
     def start_stream(self):
         """
@@ -45,10 +44,13 @@ class BinanceStreamer:
         print(f"Starting WebSocket stream for {self.symbol} on Binance.US...")
         self.twm.start()
         
+        # Pass API keys to the start_kline_socket for authentication [3]
         self.twm.start_kline_socket(
             callback=self._handle_socket_message,
             symbol=self.symbol,
-            interval=Client.KLINE_INTERVAL_1MINUTE
+            interval=Client.KLINE_INTERVAL_1MINUTE,
+            api_key=self.api_key,
+            api_secret=self.api_secret
         )
         
         self.twm.join()
