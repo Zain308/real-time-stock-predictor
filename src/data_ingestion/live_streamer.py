@@ -7,7 +7,7 @@ class BinanceStreamer:
     Connects to Binance WebSocket and puts kline data into a thread-safe queue.
     """
     def __init__(self, data_queue: queue.Queue):
-        self.twm = ThreadedWebsocketManager()
+        self.twm = ThreadedWebsocketManager(tld='us')
         self.queue = data_queue
         self.symbol = 'BTCUSDT'
         print("Binance Streamer initialized.")
