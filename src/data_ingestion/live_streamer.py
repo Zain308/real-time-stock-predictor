@@ -14,7 +14,7 @@ class BinanceStreamer:
         self.api_key = os.environ.get("BINANCE_API_KEY")
         self.api_secret = os.environ.get("BINANCE_API_SECRET")
         
-        # --- FIX: Initialize the Binance.US WebSocket Manager ---
+        # --- FIX: Initialize the Binance.US WebSocket Manager with keys ---
         self.twm = ThreadedWebsocketManager(api_key=self.api_key, api_secret=self.api_secret)
         self.queue = data_queue
         self.symbol = 'BTCUSDT'
