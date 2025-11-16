@@ -2,25 +2,40 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-# Import our sentiment module
+# Import FinBERT modules
 from src.ml.sentiment import get_sentiment, load_sentiment_model
 
-st.title("Model Performance & Analysis")
 
-# --- 1. Sentiment Model (FinBERT) ---
-st.header("Sentiment Analysis (FinBERT)")
+# --------------------------------------
+# PAGE TITLE
+# --------------------------------------
+st.title("📊 Model Performance & Analysis")
+
+
+# =========================================================
+# 1. SENTIMENT MODEL (FinBERT)
+# =========================================================
+st.header("🧠 Sentiment Analysis – FinBERT (Financial NLP Model)")
 st.markdown("""
-To meet our success criterion of >80% accuracy, we rejected generic tools like TextBlob, which are "ill-suited" for financial text.[8, 25]
-We instead use **FinBERT** (`ProsusAI/finbert`), a state-of-the-art model pre-trained on a massive financial corpus.[26, 27, 24, 28, 29] It achieves ~89% accuracy out-of-the-box.
+We do **not** use generic NLP tools such as TextBlob because they are *not reliable* in financial contexts.  
+We instead use **FinBERT (`ProsusAI/finbert`)**, a transformer model trained on financial texts, achieving ~89% accuracy.
 """)
 
-# Load the model (this will be cached)
-with st.spinner("Loading FinBERT model... (This may take a moment on first run)"):
-    load_sentiment_model()
+# Load sentiment model
+with st.spinner("Loading FinBERT model..."):
+    try:
+        sentiment_model = load_sentiment_model()
+    except Exception as e:
+        st.error(f"Error loading sentiment model: {e}")
+        sentiment_model = None
 
-st.subheader("Live FinBERT Analysis")
+
+# --------------------------------------
+# TEST HEADLINES
+# --------------------------------------
+st.subheader("Test FinBERT on Example Headlines")
+
 test_headlines = [
-    
     "Tesla (TSLA) stock rises on strong Q4 delivery numbers.",
     "The Fed announced an aggressive rate hike, sparking market fears.",
     "Apple (AAPL) profits are flat year-over-year.",
@@ -30,46 +45,81 @@ test_headlines = [
 
 df = pd.DataFrame(test_headlines, columns=["Headline"])
 
-if st.button("Run Sentiment Analysis on Examples"):
-    with st.spinner("Analyzing..."):
-        avg_score, detailed_sentiments = get_sentiment(df["Headline"].tolist())
-        
-        # Parse the detailed results
-        df['Label'] = [s['label'] for s in detailed_sentiments]
-        df['Confidence'] = [f"{s['score']:.2%}" for s in detailed_sentiments]
-        
-        st.dataframe(df, use_container_width=True)
-        st.metric("Average Sentiment of Batch", f"{avg_score:.4f}")
 
-# --- 2. Price Prediction Model (LSTM) ---
-st.header("Price Prediction (Stacked LSTM)")
+if st.button("Run Sentiment Analysis"):
+    if sentiment_model is None:
+        st.error("Sentiment model not loaded.")
+    else:
+        with st.spinner("Analyzing sentiments..."):
+            try:
+                avg_score, detailed_sentiments = get_sentiment(
+                    df["Headline"].tolist()
+                )
+
+                # Add outputs into the DataFrame
+                df["Label"] = [d.get("label", "N/A") for d in detailed_sentiments]
+                df["Confidence"] = [
+                    f"{d.get('score', 0):.2%}" for d in detailed_sentiments
+                ]
+
+                st.dataframe(df, use_container_width=True)
+
+                st.metric(
+                    label="Average Sentiment Score",
+                    value=f"{avg_score:.4f}"
+                )
+
+            except Exception as e:
+                st.error(f"Error during sentiment analysis: {e}")
+
+
+# =========================================================
+# 2. PRICE MODEL (LSTM)
+# =========================================================
+st.header("📈 Price Prediction Model – Multivariate Stacked LSTM")
+
 st.markdown("""
-Our price model is a **Multivariate Stacked LSTM**. It was trained on 2 years of
-hourly BTC/USDT data and uses 6 features:
-1.  `Open`
-2.  `High`
-3.  `Low`
-4.  `Close`
-5.  `Volume`
-6.  `Sentiment Score` (Simulated during training, live during prediction)
+This is a **Stacked LSTM model** trained using 6 features:
 
-It uses a 60-hour (timestep) lookback window to predict the price for the next hour.
+1. `Open`
+2. `High`
+3. `Low`
+4. `Close`
+5. `Volume`
+6. `Sentiment Score` (Simulated during training, live added in real-time)
+
+It uses a **60-hour sliding window** to predict the **next-hour BTC price**.
 """)
 
-st.subheader("Model Training History (Illustrative)")
-st.markdown("*(This chart shows illustrative data, as the 'history' object is not persisted after training. In a full MLOps pipeline, this would be logged with MLflow or W&B.)*")
 
-# Create a fake loss plot
-epoch = list(range(1, 51))
-train_loss = [1.0/x + 0.05 + (0.1 / x) for x in epoch]
-val_loss = [1.0/x + 0.1 + (0.05 / x) for x in epoch]
+# --------------------------------------
+# TRAINING HISTORY (illustrative)
+# --------------------------------------
+st.subheader("Training Loss Curve (Illustrative Example)")
+
+st.markdown("""
+⚠️ *This is an illustrative plot.*  
+In a real MLOps pipeline, training metrics would be logged via **MLflow**, **Weights & Biases**, or **Neptune**.
+""")
+
+epochs = list(range(1, 51))
+train_loss = [1/x + 0.05 for x in epochs]
+val_loss = [1/x + 0.08 for x in epochs]
 
 loss_fig = go.Figure()
-loss_fig.add_trace(go.Scatter(x=epoch, y=train_loss, mode='lines', name='Training Loss'))
-loss_fig.add_trace(go.Scatter(x=epoch, y=val_loss, mode='lines', name='Validation Loss'))
+loss_fig.add_trace(go.Scatter(
+    x=epochs, y=train_loss, mode="lines", name="Training Loss"
+))
+loss_fig.add_trace(go.Scatter(
+    x=epochs, y=val_loss, mode="lines", name="Validation Loss"
+))
+
 loss_fig.update_layout(
-    title="Model Training & Validation Loss Over Epochs",
+    title="Training vs Validation Loss Across Epochs",
     xaxis_title="Epoch",
-    yaxis_title="Mean Squared Error (Scaled)"
+    yaxis_title="MSE (Scaled)",
+    template="plotly_white",
+    height=450
 )
+
 st.plotly_chart(loss_fig, use_container_width=True)
