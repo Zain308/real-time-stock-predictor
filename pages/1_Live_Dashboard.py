@@ -7,126 +7,130 @@ import numpy as np
 import joblib
 import tensorflow as tf
 import plotly.graph_objects as go
-import websocket
-import json
 from streamlit.runtime.scriptrunner import add_script_run_ctx
-
-# Custom modules
 from src.logging import log_prediction_to_db
+
+# Keep your original imports for news & sentiment
 from src.data_ingestion.news_fetcher import fetch_company_news
 from src.ml.sentiment import get_sentiment
 from src.ml.preprocessing import TIMESTEPS, FEATURES
 
+import yfinance as yf
+import datetime
 
-# ---------------------------------------------------------
-# 1. YAHOO FINANCE REALTIME STREAMER (REPLACES BINANCE)
-# ---------------------------------------------------------
+# ---------------------------
+# Price Poller (replaces Binance websocket)
+# ---------------------------
+class PricePoller:
+    """
+    Polls Yahoo Finance (yfinance) for the latest 1-minute BTC-USD candle
+    and pushes a simple dict into the provided queue.
+    """
+    def __init__(self, message_queue, symbol="BTC-USD", poll_interval=15):
+        self.queue = message_queue
+        self.symbol = symbol
+        self.poll_interval = poll_interval
+        self._stopped = False
 
-class YahooStreamer:
-    def __init__(self, message_queue):
-        self.message_queue = message_queue
-        self.ws = None
-        self.url = "wss://streamer.finance.yahoo.com/"
+    def stop(self):
+        self._stopped = True
 
-    def on_message(self, ws, message):
+    def _fetch_latest_minute(self):
+        """
+        Fetch last 3 minutes at 1m interval to avoid empty frames,
+        then return the last available row as a dict.
+        """
         try:
-            msg = json.loads(message)
+            # Use UTC window that covers at least 2-3 minutes
+            end = datetime.datetime.utcnow()
+            start = end - datetime.timedelta(minutes=5)
+            df = yf.download(self.symbol, start=start, end=end, interval="1m", progress=False)
+            if df is None or df.empty:
+                return None
 
-            if "data" not in msg:
-                return
-
-            data = msg["data"][0]
-
-            self.message_queue.put({
-                "time": int(time.time() * 1000),
-                "open": data.get("open", 0),
-                "high": data.get("high", 0),
-                "low": data.get("low", 0),
-                "close": data.get("price", 0),
-                "volume": data.get("volume", 0)
-            })
-
+            last = df.iloc[-1]
+            ts = int(pd.to_datetime(df.index[-1]).tz_localize(None).timestamp() * 1000)
+            return {
+                "time": ts,
+                "open": float(last["Open"]),
+                "high": float(last["High"]),
+                "low": float(last["Low"]),
+                "close": float(last["Close"]),
+                "volume": float(last["Volume"])
+            }
         except Exception as e:
-            print("Message parse error:", e)
+            # Keep polling; transient network issues might happen
+            print("PricePoller fetch error:", e)
+            return None
 
-    def on_open(self, ws):
-        print("Yahoo Finance WebSocket Connected.")
-        # Subscribe to BTC-USD
-        subscribe_msg = json.dumps({
-            "subscribe": ["BTC-USD"]
-        })
-        ws.send(subscribe_msg)
-
-    def on_error(self, ws, error):
-        print("WebSocket Error:", error)
-
-    def on_close(self, ws, close_status_code, close_msg):
-        print("Yahoo WebSocket closed.")
-
-    def start_stream(self):
-        self.ws = websocket.WebSocketApp(
-            self.url,
-            on_message=self.on_message,
-            on_open=self.on_open,
-            on_error=self.on_error,
-            on_close=self.on_close
-        )
-        self.ws.run_forever()
+    def start_polling(self):
+        while not self._stopped:
+            item = self._fetch_latest_minute()
+            if item is not None:
+                try:
+                    # Put latest price into queue (non-blocking)
+                    self.queue.put_nowait(item)
+                except queue.Full:
+                    # If queue full, drop the update (we keep only recent)
+                    pass
+            time.sleep(self.poll_interval)
 
 
-# ---------------------------------------------------------
-# 2. STREAMLIT SESSION STATE & THREAD CREATION
-# ---------------------------------------------------------
+# ---------------------------
+# 1. SESSION STATE & THREAD INITIALIZATION
+# ---------------------------
 
 if "message_queue" not in st.session_state:
     st.session_state.message_queue = queue.Queue(maxsize=2000)
 
 if "live_data" not in st.session_state:
-    st.session_state.live_data = pd.DataFrame(
-        columns=["time", "open", "high", "low", "close", "volume"]
-    )
+    # index 'time' will be set after we receive real messages
+    st.session_state.live_data = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
 
-if "stream_started" not in st.session_state:
-    streamer = YahooStreamer(st.session_state.message_queue)
-    t = threading.Thread(target=streamer.start_stream, daemon=True)
+if "poller_thread" not in st.session_state:
+    poller = PricePoller(st.session_state.message_queue, symbol="BTC-USD", poll_interval=15)
+    t = threading.Thread(target=poller.start_polling, daemon=True)
     add_script_run_ctx(t)
     t.start()
+    st.session_state.poller_thread = t
+    st.session_state.poller = poller
+    print("Price poller thread started.")
 
-    st.session_state.stream_started = True
-    print("Yahoo Finance Streaming Thread Started")
 
-
-# ---------------------------------------------------------
-# 3. LOAD MODELS
-# ---------------------------------------------------------
-
+# ---------------------------
+# 2. LOAD MODELS (CACHED)
+# ---------------------------
 @st.cache_resource
 def load_models():
+    """Loads LSTM model and scaler. Return (model, scaler) or (None, None)."""
     try:
-        model = tf.keras.models.load_model("models/price_model.h5")
-        scaler = joblib.load("models/price_scaler.pkl")
-        print("Models loaded successfully.")
-        return model, scaler
+        model = tf.keras.models.load_model('models/price_model.h5')
     except Exception as e:
-        print("Model loading error:", e)
-        return None, None
+        print("Error loading LSTM model:", e)
+        model = None
+
+    try:
+        scaler = joblib.load('models/price_scaler.pkl')
+    except Exception as e:
+        print("Error loading scaler:", e)
+        scaler = None
+
+    return model, scaler
 
 model, scaler = load_models()
 
 
-# ---------------------------------------------------------
-# 4. UI DESIGN
-# ---------------------------------------------------------
-
-st.title("Live BTC Price & Prediction Dashboard (Yahoo Finance API)")
+# ---------------------------
+# 3. UI LAYOUT
+# ---------------------------
+st.title("Live BTC/USDT Price & Prediction Dashboard")
 
 price_col, sentiment_col = st.columns([1, 2])
 
 with price_col:
     chart_placeholder = st.empty()
-
 with sentiment_col:
-    st.subheader("Price Prediction")
+    st.subheader("On-Demand Prediction")
     predict_button = st.button("Predict Next Hour Price")
     prediction_placeholder = st.empty()
     st.subheader("Live Sentiment (Last 24h)")
@@ -135,105 +139,139 @@ with sentiment_col:
 data_grid_placeholder = st.empty()
 
 
-# ---------------------------------------------------------
-# 5. PREDICTION LOGIC
-# ---------------------------------------------------------
-
+# ---------------------------
+# 4. PREDICTION LOGIC
+# ---------------------------
 if predict_button:
     if model is None or scaler is None:
-        prediction_placeholder.error("Model not loaded.")
+        prediction_placeholder.error("Models are not loaded. Cannot predict.")
     else:
-        with st.spinner("Predicting..."):
+        with st.spinner("Running prediction..."):
             try:
-                df = st.session_state.live_data
-
-                if len(df) < TIMESTEPS:
-                    prediction_placeholder.warning(
-                        f"Not enough data. Need {TIMESTEPS} points."
-                    )
+                # Need TIMESTEPS rows
+                if len(st.session_state.live_data) < TIMESTEPS:
+                    prediction_placeholder.warning(f"Not enough data. Need {TIMESTEPS} points to predict.")
                 else:
-                    headlines = fetch_company_news("CRYPTO")
-                    sentiment_score, _ = get_sentiment(headlines)
+                    # 2. Get live sentiment (safe fallback to neutral 0.0 if fetch fails)
+                    try:
+                        headlines = fetch_company_news("CRYPTO")
+                        live_sentiment_score, _ = get_sentiment(headlines)
+                    except Exception as e:
+                        print("Sentiment fetch error:", e)
+                        live_sentiment_score = 0.0
 
-                    sentiment_placeholder.metric(
-                        "Live Sentiment Score",
-                        f"{sentiment_score:.4f}"
-                    )
+                    sentiment_placeholder.write(f"Current News Sentiment: {live_sentiment_score:.4f}")
 
-                    features_df = df.tail(TIMESTEPS)[
-                        ["open", "high", "low", "close", "volume"]
-                    ]
-                    features_df["sentiment"] = sentiment_score
+                    # 3. Prepare features (last TIMESTEPS rows)
+                    features_df = st.session_state.live_data.tail(TIMESTEPS)[['open', 'high', 'low', 'close', 'volume']].copy()
+                    features_df['sentiment'] = live_sentiment_score
 
-                    scaled = scaler.transform(features_df)
-                    inp = scaled.reshape(1, TIMESTEPS, FEATURES)
+                    # Ensure shape and order match scaler expectation (columns: open, high, low, close, volume, sentiment)
+                    if features_df.shape[1] != FEATURES:
+                        prediction_placeholder.error(f"Feature mismatch: expected {FEATURES} columns but got {features_df.shape[1]}.")
+                    else:
+                        # 4. Scale and reshape
+                        scaled_data = scaler.transform(features_df)  # (TIMESTEPS, FEATURES)
+                        input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES))
 
-                    pred_scaled = model.predict(inp)
+                        # 5. Predict (model outputs scaled 'close' value)
+                        scaled_prediction = model.predict(input_data)  # Expect shape (1,1) or (1, timesteps, 1) depending on model
+                        # Normalize to shape (1,) containing the predicted scaled close
+                        if scaled_prediction.ndim == 3:
+                            # If model returns sequence, take last element
+                            scaled_pred_val = scaled_prediction[0, -1, 0]
+                        else:
+                            scaled_pred_val = float(np.asarray(scaled_prediction).reshape(-1)[0])
 
-                    dummy = np.zeros((1, FEATURES))
-                    dummy[0] = pred_scaled
+                        # 6. Inverse transform
+                        # Build a dummy row in scaled space with zeros and put predicted scaled close at index 3
+                        dummy_scaled = np.zeros((1, FEATURES))
+                        # scaled values expected order: open, high, low, close, volume, sentiment
+                        dummy_scaled[0, 3] = scaled_pred_val  # put into 'close' position
+                        inversed = scaler.inverse_transform(dummy_scaled)  # returns shape (1, FEATURES)
+                        actual_prediction_value = float(inversed[0, 3])
 
-                    pred_actual = scaler.inverse_transform(dummy)[0][3]
+                        # Current price (last close)
+                        current_price = float(features_df['close'].iloc[-1])
+                        delta = actual_prediction_value - current_price
 
-                    current_price = features_df["close"].iloc[-1]
-                    delta = pred_actual - current_price
+                        prediction_placeholder.metric(
+                            label="Predicted Price (Next Hour)",
+                            value=f"${actual_prediction_value:,.2f}",
+                            delta=f"${delta:,.2f} vs current"
+                        )
 
-                    prediction_placeholder.metric(
-                        "Predicted BTC Price (Next Hour)",
-                        f"${pred_actual:,.2f}",
-                        f"{delta:,.2f}"
-                    )
-
-                    log_prediction_to_db(features_df, pred_actual)
+                        # Log to DB (catch exceptions to avoid breaking UI)
+                        try:
+                            log_prediction_to_db(features_df, actual_prediction_value)
+                        except Exception as e:
+                            print("Logging error:", e)
 
             except Exception as e:
-                prediction_placeholder.error(f"Prediction failed: {e}")
+                prediction_placeholder.error(f"Prediction error: {e}")
 
 
-# ---------------------------------------------------------
-# 6. PROCESS NEW STREAM DATA
-# ---------------------------------------------------------
-
-new_data = []
+# ---------------------------
+# 5. DRAIN QUEUE & UPDATE live_data
+# ---------------------------
+new_data_list = []
 while not st.session_state.message_queue.empty():
-    new_data.append(st.session_state.message_queue.get())
+    try:
+        msg = st.session_state.message_queue.get_nowait()
+        new_data_list.append(msg)
+    except queue.Empty:
+        break
 
-if new_data:
-    df_new = pd.DataFrame(new_data)
-    df_new["time"] = pd.to_datetime(df_new["time"], unit='ms')
-    df_new.set_index("time", inplace=True)
+if new_data_list:
+    new_df = pd.DataFrame(new_data_list)
+    # Convert time -> datetime index
+    new_df['time'] = pd.to_datetime(new_df['time'], unit='ms')
+    new_df.set_index('time', inplace=True)
+    # Ensure columns are lowercased and numeric
+    for col in ['open', 'high', 'low', 'close', 'volume']:
+        new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
+    # Merge with existing live_data
+    if st.session_state.live_data.empty:
+        st.session_state.live_data = new_df[['open', 'high', 'low', 'close', 'volume']].copy()
+    else:
+        combined = pd.concat([st.session_state.live_data, new_df[['open', 'high', 'low', 'close', 'volume']]])
+        # drop duplicates by index (time)
+        combined = combined[~combined.index.duplicated(keep='last')]
+        # keep only the last 2000 rows to limit memory
+        st.session_state.live_data = combined.tail(2000)
 
-    st.session_state.live_data = pd.concat(
-        [st.session_state.live_data, df_new]
-    ).tail(1000)
 
-
-# ---------------------------------------------------------
-# 7. CHART + DATA TABLE
-# ---------------------------------------------------------
-
-df = st.session_state.live_data
-
+# ---------------------------
+# 6. RENDER CHART & DATA
+# ---------------------------
+df = st.session_state.live_data.copy()
 if not df.empty:
     fig = go.Figure(data=[go.Candlestick(
         x=df.index,
-        open=df["open"],
-        high=df["high"],
-        low=df["low"],
-        close=df["close"]
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        increasing_line_color='green',
+        decreasing_line_color='red',
     )])
-
     fig.update_layout(
-        title="Real-Time BTC/USDT (Yahoo Finance API)",
+        title='Live BTC/USDT (1-Minute Klines)',
+        xaxis_title='Time',
+        yaxis_title='Price (USDT)',
         xaxis_rangeslider_visible=False,
-        height=500
+        height=520
     )
-
     chart_placeholder.plotly_chart(fig, use_container_width=True)
 
-    data_grid_placeholder.dataframe(df.tail(20))
+    # show last 10 rows
+    data_grid_placeholder.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
+else:
+    chart_placeholder.info("Waiting for live data...")
 
-
-# Auto-refresh
+# ---------------------------
+# 7. AUTO-RERUN (simple live tick)
+# ---------------------------
+# Sleep a short moment so the UI doesn't busy-loop
 time.sleep(1)
 st.rerun()
