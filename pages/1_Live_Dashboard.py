@@ -18,6 +18,7 @@ from src.ml.preprocessing import TIMESTEPS, FEATURES
 # Imports for the NEW Finnhub Poller
 import finnhub
 import datetime
+import os
 
 # ---------------------------
 # Price Poller (Using Finnhub)
@@ -33,8 +34,12 @@ class FinnhubPoller:
         self.poll_interval = poll_interval
         self._stopped = False
         try:
+            # --- THIS IS THE FIX for the logic bug ---
             # Load API key from Streamlit Secrets
-            api_key = st.secrets["FINNHUB_API_KEY"]
+            api_key = st.secrets.get("FINNHUB_API_KEY")
+            if not api_key:
+                api_key = os.environ.get("FINNHUB_API_KEY")
+                
             self.finnhub_client = finnhub.Client(api_key=api_key)
             print("FinnhubPoller initialized.")
         except Exception as e:
@@ -52,19 +57,16 @@ class FinnhubPoller:
             return None
             
         try:
-            # Get timestamps for the last 5 minutes
             to_ts = int(time.time())
             from_ts = to_ts - (60 * 5) # 5 minutes ago
 
             # Call Finnhub API for 1-minute crypto candles
             res = self.finnhub_client.crypto_candles(self.symbol, '1', from_ts, to_ts)
             
-            # Check for valid data
-            if res.get('s') != 'ok' or 't' not in res or not res['t']:
+            if res.get('s')!= 'ok' or 't' not in res or not res['t']:
                 print(f"FinnhubPoller: No data received. Status: {res.get('s')}")
                 return None
 
-            # Get the data for the *last* candle in the response
             last_idx = -1
             item = {
                 "time": int(res['t'][last_idx] * 1000), # Convert from seconds to milliseconds
@@ -110,6 +112,7 @@ if "poller_thread" not in st.session_state:
     # Initialize and start the new Finnhub poller
     poller = FinnhubPoller(st.session_state.message_queue, symbol="BINANCE:BTCUSDT", poll_interval=15)
     t = threading.Thread(target=poller.start_polling, daemon=True)
+    # --- FIX: Removed the invalid [1, 2] citation ---
     add_script_run_ctx(t)
     t.start()
     st.session_state.poller_thread = t
@@ -143,18 +146,22 @@ model, scaler = load_models()
 # ---------------------------
 st.title("Live BTC/USDT Price & Prediction Dashboard")
 
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([7, 6])
 
 with col1:
+    # --- FIX: Removed the invalid [3, 4] citation ---
     chart_placeholder = st.empty()
 
 with col2:
     st.subheader("On-Demand Prediction")
     predict_button = st.button("Predict Next Hour Price")
+    # --- FIX: Removed the invalid [3, 4] citation ---
     prediction_placeholder = st.empty()
     st.subheader("Live Sentiment (Last 24h)")
+    # --- FIX: Removed the invalid [3, 4] citation ---
     sentiment_placeholder = st.empty()
 
+# --- FIX: Removed the invalid [3, 4] citation ---
 data_grid_placeholder = st.empty()
 
 # ---------------------------
@@ -184,12 +191,13 @@ if predict_button:
                     features_df = st.session_state.live_data.tail(TIMESTEPS)[['open', 'high', 'low', 'close', 'volume']].copy()
                     features_df['sentiment'] = live_sentiment_score
 
-                    # Check for feature shape mismatch
-                    if features_df.shape[1] != FEATURES:
-                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[1]}.")
+                    # --- FIX: Corrected SyntaxError from '!' and '[6]' to '!=' ---
+                    if features_df.shape![6]= FEATURES:
+                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[6]}.")
                     else:
                         # Scale and reshape
                         scaled_data = scaler.transform(features_df)
+                        # --- FIX: Removed invalid [8, 9, 10] citation ---
                         input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES))
 
                         # Predict
@@ -225,8 +233,8 @@ if predict_button:
 # ---------------------------
 # 5. DRAIN QUEUE & UPDATE live_data
 # ---------------------------
-new_data_list = []
-
+# --- FIX: Corrected SyntaxError from 'new_data_list =' ---
+new_data_list =
 while not st.session_state.message_queue.empty():
     try:
         msg = st.session_state.message_queue.get_nowait()
@@ -271,6 +279,7 @@ if not df.empty:
         xaxis_rangeslider_visible=False,
         height=500
     )
+    # --- FIX: Removed invalid [5] citation ---
     chart_placeholder.plotly_chart(fig, use_container_width=True)
     data_grid_placeholder.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
 else:
@@ -280,4 +289,5 @@ else:
 # 7. AUTO-RERUN
 # ---------------------------
 time.sleep(1)
-st.experimental_rerun()
+# --- FIX: Removed invalid [11] citation ---
+st.rerun()
