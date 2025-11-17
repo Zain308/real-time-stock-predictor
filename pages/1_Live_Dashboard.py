@@ -34,7 +34,7 @@ class FinnhubPoller:
         self._stopped = False
         try:
             # Load API key from Streamlit Secrets
-            api_key = st.secrets
+            api_key = st.secrets["FINNHUB_API_KEY"]
             self.finnhub_client = finnhub.Client(api_key=api_key)
             print("FinnhubPoller initialized.")
         except Exception as e:
@@ -57,10 +57,10 @@ class FinnhubPoller:
             from_ts = to_ts - (60 * 5) # 5 minutes ago
 
             # Call Finnhub API for 1-minute crypto candles
-            res = self.finnhub_client.crypto_candles(self.symbol, '1', from_ts, to_ts) [5]
+            res = self.finnhub_client.crypto_candles(self.symbol, '1', from_ts, to_ts)
             
             # Check for valid data
-            if res.get('s')!= 'ok' or 't' not in res or not res['t']:
+            if res.get('s') != 'ok' or 't' not in res or not res['t']:
                 print(f"FinnhubPoller: No data received. Status: {res.get('s')}")
                 return None
 
@@ -100,7 +100,6 @@ class FinnhubPoller:
 # ---------------------------
 # 1. SESSION STATE & THREAD INITIALIZATION
 # ---------------------------
-
 if "message_queue" not in st.session_state:
     st.session_state.message_queue = queue.Queue(maxsize=2000)
 
@@ -111,7 +110,7 @@ if "poller_thread" not in st.session_state:
     # Initialize and start the new Finnhub poller
     poller = FinnhubPoller(st.session_state.message_queue, symbol="BINANCE:BTCUSDT", poll_interval=15)
     t = threading.Thread(target=poller.start_polling, daemon=True)
-    add_script_run_ctx(t) [6, 7]
+    add_script_run_ctx(t)
     t.start()
     st.session_state.poller_thread = t
     st.session_state.poller = poller
@@ -147,16 +146,16 @@ st.title("Live BTC/USDT Price & Prediction Dashboard")
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    chart_placeholder = st.empty() [8, 9]
+    chart_placeholder = st.empty()
 
 with col2:
     st.subheader("On-Demand Prediction")
     predict_button = st.button("Predict Next Hour Price")
-    prediction_placeholder = st.empty() [8, 9]
+    prediction_placeholder = st.empty()
     st.subheader("Live Sentiment (Last 24h)")
-    sentiment_placeholder = st.empty() [8, 9]
+    sentiment_placeholder = st.empty()
 
-data_grid_placeholder = st.empty() [8, 9]
+data_grid_placeholder = st.empty()
 
 # ---------------------------
 # 4. PREDICTION LOGIC
@@ -186,12 +185,12 @@ if predict_button:
                     features_df['sentiment'] = live_sentiment_score
 
                     # Check for feature shape mismatch
-                    if features_df.shape![2]= FEATURES:
-                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[2]}.")
+                    if features_df.shape[1] != FEATURES:
+                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[1]}.")
                     else:
                         # Scale and reshape
                         scaled_data = scaler.transform(features_df)
-                        input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES)) [10, 11, 12, 13, 14, 15, 16]
+                        input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES))
 
                         # Predict
                         scaled_prediction = model.predict(input_data)
@@ -226,7 +225,8 @@ if predict_button:
 # ---------------------------
 # 5. DRAIN QUEUE & UPDATE live_data
 # ---------------------------
-new_data_list =
+new_data_list = []
+
 while not st.session_state.message_queue.empty():
     try:
         msg = st.session_state.message_queue.get_nowait()
@@ -280,4 +280,4 @@ else:
 # 7. AUTO-RERUN
 # ---------------------------
 time.sleep(1)
-st.rerun()
+st.experimental_rerun()
