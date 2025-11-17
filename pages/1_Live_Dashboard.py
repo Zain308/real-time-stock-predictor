@@ -192,8 +192,8 @@ if predict_button:
                     features_df['sentiment'] = live_sentiment_score
 
                     # --- FIX: Corrected SyntaxError from '!' and '[6]' to '!=' ---
-                    if features_df.shape![6]= FEATURES:
-                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[6]}.")
+                    if features_df.shape[1] != FEATURES:
+                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[1]}.")
                     else:
                         # Scale and reshape
                         scaled_data = scaler.transform(features_df)
@@ -234,7 +234,7 @@ if predict_button:
 # 5. DRAIN QUEUE & UPDATE live_data
 # ---------------------------
 # --- FIX: Corrected SyntaxError from 'new_data_list =' ---
-new_data_list =
+new_data_list = []
 while not st.session_state.message_queue.empty():
     try:
         msg = st.session_state.message_queue.get_nowait()
