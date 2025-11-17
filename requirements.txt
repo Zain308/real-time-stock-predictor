@@ -11,5 +11,4 @@ torch
 psycopg2-binary
 SQLAlchemy
 plotly
-websocket-client
 yfinance

@@ -5,20 +5,18 @@ import plotly.graph_objects as go
 # Import FinBERT modules
 from src.ml.sentiment import get_sentiment, load_sentiment_model
 
-
 # --------------------------------------
 # PAGE TITLE
 # --------------------------------------
-st.title("📊 Model Performance & Analysis")
-
+st.title("Model Performance & Analysis")
 
 # =========================================================
 # 1. SENTIMENT MODEL (FinBERT)
 # =========================================================
-st.header("🧠 Sentiment Analysis – FinBERT (Financial NLP Model)")
+st.header("Sentiment Analysis – FinBERT (Financial NLP Model)")
 st.markdown("""
-We do **not** use generic NLP tools such as TextBlob because they are *not reliable* in financial contexts.  
-We instead use **FinBERT (`ProsusAI/finbert`)**, a transformer model trained on financial texts, achieving ~89% accuracy.
+We do **not** use generic NLP tools such as TextBlob because they are not reliable in financial contexts.
+We instead use **FinBERT (`ProsusAI/finbert`)**, a transformer model trained on financial texts, achieving ~89% accuracy. [7, 8]
 """)
 
 # Load sentiment model
@@ -29,22 +27,14 @@ with st.spinner("Loading FinBERT model..."):
         st.error(f"Error loading sentiment model: {e}")
         sentiment_model = None
 
-
 # --------------------------------------
 # TEST HEADLINES
 # --------------------------------------
 st.subheader("Test FinBERT on Example Headlines")
 
-test_headlines = [
-    "Tesla (TSLA) stock rises on strong Q4 delivery numbers.",
-    "The Fed announced an aggressive rate hike, sparking market fears.",
-    "Apple (AAPL) profits are flat year-over-year.",
-    "Analysts are bullish on the new tech IPO.",
-    "The company's earnings report was a disaster."
-]
+test_headlines =
 
 df = pd.DataFrame(test_headlines, columns=["Headline"])
-
 
 if st.button("Run Sentiment Analysis"):
     if sentiment_model is None:
@@ -72,25 +62,23 @@ if st.button("Run Sentiment Analysis"):
             except Exception as e:
                 st.error(f"Error during sentiment analysis: {e}")
 
-
 # =========================================================
 # 2. PRICE MODEL (LSTM)
 # =========================================================
-st.header("📈 Price Prediction Model – Multivariate Stacked LSTM")
+st.header("Price Prediction Model – Multivariate Stacked LSTM")
 
 st.markdown("""
 This is a **Stacked LSTM model** trained using 6 features:
 
-1. `Open`
-2. `High`
-3. `Low`
-4. `Close`
-5. `Volume`
-6. `Sentiment Score` (Simulated during training, live added in real-time)
+1.  `Open`
+2.  `High`
+3.  `Low`
+4.  `Close`
+5.  `Volume`
+6.  `Sentiment Score` (Simulated during training, live added in real-time) [9, 10, 11, 12, 13, 14, 15, 16, 17]
 
 It uses a **60-hour sliding window** to predict the **next-hour BTC price**.
 """)
-
 
 # --------------------------------------
 # TRAINING HISTORY (illustrative)
@@ -98,8 +86,7 @@ It uses a **60-hour sliding window** to predict the **next-hour BTC price**.
 st.subheader("Training Loss Curve (Illustrative Example)")
 
 st.markdown("""
-⚠️ *This is an illustrative plot.*  
-In a real MLOps pipeline, training metrics would be logged via **MLflow**, **Weights & Biases**, or **Neptune**.
+*Note: This is an illustrative plot. In a real MLOps pipeline, training metrics would be logged via MLflow, Weights & Biases, or Neptune.*
 """)
 
 epochs = list(range(1, 51))
