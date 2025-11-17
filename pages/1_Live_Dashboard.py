@@ -34,13 +34,16 @@ class FinnhubPoller:
         self.poll_interval = poll_interval
         self._stopped = False
         try:
-            # --- THIS IS THE FIX for the logic bug ---
-            # Load API key from Streamlit Secrets [12, 13]
-            api_key = st.secrets.get("FINNHUB_API_KEY")
+            # Load API key from Streamlit Secrets or env
+            api_key = st.secrets.get("FINNHUB_API_KEY") if hasattr(st, "secrets") else None
             if not api_key:
                 api_key = os.environ.get("FINNHUB_API_KEY")
-                
-            self.finnhub_client = finnhub.Client(api_key=api_key) [14, 15]
+
+            if not api_key:
+                raise ValueError("Finnhub API key not found in streamlit secrets or environment.")
+
+            # Create client
+            self.finnhub_client = finnhub.Client(api_key=api_key)
             print("FinnhubPoller initialized.")
         except Exception as e:
             print(f"Error initializing Finnhub client: {e}")
@@ -55,21 +58,21 @@ class FinnhubPoller:
         """
         if self.finnhub_client is None:
             return None
-            
+
         try:
             to_ts = int(time.time())
-            from_ts = to_ts - (60 * 5) # 5 minutes ago
+            from_ts = to_ts - (60 * 5)  # 5 minutes ago
 
-            # Call Finnhub API for 1-minute crypto candles [14, 15]
+            # Call Finnhub API for 1-minute crypto candles
             res = self.finnhub_client.crypto_candles(self.symbol, '1', from_ts, to_ts)
-            
-            if res.get('s')!= 'ok' or 't' not in res or not res['t']:
+
+            if res.get('s') != 'ok' or 't' not in res or not res['t']:
                 print(f"FinnhubPoller: No data received. Status: {res.get('s')}")
                 return None
 
             last_idx = -1
             item = {
-                "time": int(res['t'][last_idx] * 1000), # Convert from seconds to milliseconds
+                "time": int(res['t'][last_idx] * 1000),  # Convert from seconds to milliseconds
                 "open": float(res['o'][last_idx]),
                 "high": float(res['h'][last_idx]),
                 "low": float(res['l'][last_idx]),
@@ -88,16 +91,17 @@ class FinnhubPoller:
         print("FinnhubPoller thread started.")
         while not self._stopped:
             item = self._fetch_latest_minute()
-            
+
             if item is not None:
-                print(f"Poller fetched: {item}") # This will show in the logs
+                print(f"Poller fetched: {item}")  # This will show in the logs
                 try:
                     self.queue.put_nowait(item)
                 except queue.Full:
                     pass
-            
+
             time.sleep(self.poll_interval)
         print("Polling thread stopped.")
+
 
 # ---------------------------
 # 1. SESSION STATE & THREAD INITIALIZATION
@@ -112,12 +116,12 @@ if "poller_thread" not in st.session_state:
     # Initialize and start the new Finnhub poller
     poller = FinnhubPoller(st.session_state.message_queue, symbol="BINANCE:BTCUSDT", poll_interval=15)
     t = threading.Thread(target=poller.start_polling, daemon=True)
-    # --- FIX: Removed the invalid [1, 2] citation ---
-    add_script_run_ctx(t) [16, 17]
+    add_script_run_ctx(t)
     t.start()
     st.session_state.poller_thread = t
     st.session_state.poller = poller
     print("Price poller thread registered in session state.")
+
 
 # ---------------------------
 # 2. LOAD MODELS (CACHED)
@@ -134,7 +138,7 @@ def load_models():
         scaler = joblib.load('models/price_scaler.pkl')
     except Exception as e:
         print(f"Error loading scaler: {e}")
-    
+
     if model and scaler:
         print("Models loaded successfully.")
     return model, scaler
@@ -149,20 +153,16 @@ st.title("Live BTC/USDT Price & Prediction Dashboard")
 col1, col2 = st.columns([7, 6])
 
 with col1:
-    # --- FIX: Removed the invalid [3, 4] citation ---
-    chart_placeholder = st.empty() [18, 19, 20, 21, 22]
+    chart_placeholder = st.empty()
 
 with col2:
     st.subheader("On-Demand Prediction")
     predict_button = st.button("Predict Next Hour Price")
-    # --- FIX: Removed the invalid [3, 4] citation ---
-    prediction_placeholder = st.empty() [18, 19, 20, 21, 22]
+    prediction_placeholder = st.empty()
     st.subheader("Live Sentiment (Last 24h)")
-    # --- FIX: Removed the invalid [3, 4] citation ---
-    sentiment_placeholder = st.empty() [18, 19, 20, 21, 22]
+    sentiment_placeholder = st.empty()
 
-# --- FIX: Removed the invalid [3, 4] citation ---
-data_grid_placeholder = st.empty() [18, 19, 20, 21, 22]
+data_grid_placeholder = st.empty()
 
 # ---------------------------
 # 4. PREDICTION LOGIC
@@ -173,7 +173,7 @@ if predict_button:
     else:
         with st.spinner("Running prediction..."):
             try:
-                # Check if we have enough data (TIMESTEPS = 60)
+                # Check if we have enough data (TIMESTEPS)
                 if len(st.session_state.live_data) < TIMESTEPS:
                     prediction_placeholder.warning(f"Not enough data. Need {TIMESTEPS} data points to predict.")
                 else:
@@ -184,33 +184,43 @@ if predict_button:
                         live_sentiment_score, _ = get_sentiment(headlines)
                     except Exception as e:
                         print(f"Sentiment fetch error: {e}")
-                    
+
                     sentiment_placeholder.write(f"Current News Sentiment: {live_sentiment_score:.4f}")
 
-                    # Prepare features (last 60 rows)
+                    # Prepare features (last TIMESTEPS rows)
                     features_df = st.session_state.live_data.tail(TIMESTEPS)[['open', 'high', 'low', 'close', 'volume']].copy()
                     features_df['sentiment'] = live_sentiment_score
 
-                    # --- FIX: Corrected SyntaxError from '!' and '[6]' to '!=' ---
-                    if features_df.shape![6]= FEATURES:
-                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[6]}.")
+                    # Correct feature-dimension check
+                    if features_df.shape[1] != FEATURES:
+                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[1]}.")
                     else:
+                        # Ensure numeric and handle NaNs
+                        features_df = features_df.astype(float).fillna(method='ffill').fillna(method='bfill').fillna(0.0)
+
                         # Scale and reshape
-                        scaled_data = scaler.transform(features_df)
-                        # --- FIX: Removed invalid [8, 9, 10] citation ---
-                        input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES)) [23, 24, 25, 26, 27]
+                        scaled_data = scaler.transform(features_df.values)  # shape (TIMESTEPS, FEATURES)
+                        input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES))
 
                         # Predict
-                        scaled_prediction = model.predict(input_data)
-                        scaled_pred_val = float(np.asarray(scaled_prediction).reshape(-1))
+                        scaled_prediction = model.predict(input_data, verbose=0)
+                        # Extract single scalar prediction robustly
+                        try:
+                            scaled_pred_val = float(np.ravel(scaled_prediction)[0])
+                        except Exception:
+                            scaled_pred_val = float(np.asarray(scaled_prediction).reshape(-1)[0])
 
                         # Inverse transform to get real dollar value
-                        dummy_scaled = np.zeros((1, FEATURES))
-                        target_index = 3 # 'close' is at index 3
+                        dummy_scaled = np.zeros((1, FEATURES), dtype=float)
+                        target_index = 3  # 'close' is at index 3
                         dummy_scaled[0, target_index] = scaled_pred_val
-                        
-                        inversed = scaler.inverse_transform(dummy_scaled)
-                        actual_prediction_value = float(inversed[0, target_index])
+
+                        try:
+                            inversed = scaler.inverse_transform(dummy_scaled)
+                            actual_prediction_value = float(inversed[0, target_index])
+                        except Exception as e:
+                            print(f"Inverse transform failed: {e}")
+                            actual_prediction_value = float(scaled_pred_val)
 
                         current_price = float(features_df['close'].iloc[-1])
                         delta = actual_prediction_value - current_price
@@ -230,11 +240,11 @@ if predict_button:
             except Exception as e:
                 prediction_placeholder.error(f"Prediction error: {e}")
 
+
 # ---------------------------
 # 5. DRAIN QUEUE & UPDATE live_data
 # ---------------------------
-# --- FIX: Corrected SyntaxError from 'new_data_list =' ---
-new_data_list =
+new_data_list = []
 while not st.session_state.message_queue.empty():
     try:
         msg = st.session_state.message_queue.get_nowait()
@@ -246,17 +256,21 @@ if new_data_list:
     new_df = pd.DataFrame(new_data_list)
     new_df['time'] = pd.to_datetime(new_df['time'], unit='ms')
     new_df.set_index('time', inplace=True)
-    
+
     for col in ['open', 'high', 'low', 'close', 'volume']:
         new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
-    
+
+    # Keep only expected columns
+    new_df = new_df[['open', 'high', 'low', 'close', 'volume']].copy()
+
     if st.session_state.live_data.empty:
-        st.session_state.live_data = new_df[['open', 'high', 'low', 'close', 'volume']].copy()
+        st.session_state.live_data = new_df.copy()
     else:
-        combined = pd.concat([st.session_state.live_data, new_df[['open', 'high', 'low', 'close', 'volume']]])
+        combined = pd.concat([st.session_state.live_data, new_df])
         # Drop duplicates by index (time), keeping the last-received update
         combined = combined[~combined.index.duplicated(keep='last')]
-        st.session_state.live_data = combined.tail(2000) # Limit memory
+        st.session_state.live_data = combined.tail(2000)  # Limit memory
+
 
 # ---------------------------
 # 6. RENDER CHART & DATA
@@ -279,15 +293,14 @@ if not df.empty:
         xaxis_rangeslider_visible=False,
         height=500
     )
-    # --- FIX: Removed invalid [5] citation ---
     chart_placeholder.plotly_chart(fig, use_container_width=True)
     data_grid_placeholder.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
 else:
     chart_placeholder.info("Waiting for live data...")
 
+
 # ---------------------------
 # 7. AUTO-RERUN
 # ---------------------------
 time.sleep(1)
-# --- FIX: Removed invalid [11] citation ---
-st.rerun() [28, 29]
+st.rerun()
