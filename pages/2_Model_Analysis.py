@@ -32,7 +32,13 @@ with st.spinner("Loading FinBERT model..."):
 # --------------------------------------
 st.subheader("Test FinBERT on Example Headlines")
 
-test_headlines =
+test_headlines = [
+    "Bitcoin surges as investors react positively to new ETF approvals",
+    "Market uncertainty grows as crypto firms face regulatory pressure",
+    "BTC price stabilizes after a week of extreme volatility",
+    "Analysts predict bullish trend following strong institutional inflows",
+    "Major exchange reports technical issues, raising security concerns"
+]
 
 df = pd.DataFrame(test_headlines, columns=["Headline"])
 
