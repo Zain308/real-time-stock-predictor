@@ -11,4 +11,3 @@ torch
 psycopg2-binary
 SQLAlchemy
 plotly
-yfinance
