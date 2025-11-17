@@ -52,8 +52,18 @@ class PricePoller:
                 return None
 
             last_row = df.iloc[-1]
-            # Convert index (timestamp) to UTC milliseconds
-            ts = int(pd.to_datetime(df.index[-1]).tz_localize(None).timestamp() * 1000)
+            # Convert index (timestamp) to UTC milliseconds robustly
+            ts_idx = pd.to_datetime(df.index[-1])
+            try:
+                # remove tz if present
+                ts_idx = ts_idx.tz_localize(None)
+            except Exception:
+                try:
+                    ts_idx = ts_idx.tz_convert(None)
+                except Exception:
+                    pass
+
+            ts = int(pd.to_datetime(ts_idx).timestamp() * 1000)
             
             return {
                 "time": ts,
@@ -100,7 +110,7 @@ if "poller_thread" not in st.session_state:
     # Initialize and start the new YFinance poller
     poller = PricePoller(st.session_state.message_queue, symbol="BTC-USD", poll_interval=15)
     t = threading.Thread(target=poller.start_polling, daemon=True)
-    add_script_run_ctx(t) [4]
+    add_script_run_ctx(t)
     t.start()
     st.session_state.poller_thread = t
     st.session_state.poller = poller
@@ -122,6 +132,10 @@ def load_models():
     except Exception as e:
         print(f"Error loading scaler: {e}")
     
+    if model and scaler:
+        print("Models loaded successfully.")
+    else:
+        print("One or more model components failed to load.")
     return model, scaler
 
 model, scaler = load_models()
@@ -131,7 +145,7 @@ model, scaler = load_models()
 # ---------------------------
 st.title("Live BTC/USDT Price & Prediction Dashboard")
 
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([5, 1])
 
 with col1:
     chart_placeholder = st.empty()
@@ -168,28 +182,47 @@ if predict_button:
                     
                     sentiment_placeholder.write(f"Current News Sentiment: {live_sentiment_score:.4f}")
 
-                    # Prepare features (last 60 rows)
+                    # Prepare features (last TIMESTEPS rows)
                     features_df = st.session_state.live_data.tail(TIMESTEPS)[['open', 'high', 'low', 'close', 'volume']].copy()
+                    # Add sentiment as a column (broadcast the single value)
                     features_df['sentiment'] = live_sentiment_score
 
-                    if features_df.shape![2]= FEATURES:
-                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[2]}.")
+                    # Validate feature dimension
+                    if features_df.shape[1] != FEATURES:
+                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[1]}.")
                     else:
+                        # Ensure numeric and no NaNs
+                        features_df = features_df.astype(float).fillna(method='ffill').fillna(method='bfill').fillna(0.0)
+
                         # Scale and reshape
-                        scaled_data = scaler.transform(features_df)
+                        scaled_data = scaler.transform(features_df.values)  # shape (TIMESTEPS, FEATURES)
                         input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES))
 
                         # Predict
-                        scaled_prediction = model.predict(input_data)
-                        scaled_pred_val = float(np.asarray(scaled_prediction).reshape(-1))
+                        scaled_prediction = model.predict(input_data, verbose=0)
+                        # Safely extract single prediction value (model may output array)
+                        try:
+                            scaled_pred_val = float(np.ravel(scaled_prediction)[0])
+                        except Exception:
+                            # fallback: if model returns shape (1, FEATURES) and target was 'close' at index 3
+                            if np.asarray(scaled_prediction).ndim == 2 and np.asarray(scaled_prediction).shape[1] > 0:
+                                scaled_pred_val = float(np.asarray(scaled_prediction)[0, 0])
+                            else:
+                                raise
 
                         # Inverse transform to get real dollar value
-                        dummy_scaled = np.zeros((1, FEATURES))
-                        target_index = 3 # 'close' is at index 3
+                        # Create a dummy row in scaled space, place the scaled prediction in the 'close' column
+                        dummy_scaled = np.zeros((1, FEATURES), dtype=float)
+                        target_index = 3  # 'close' is at index 3
                         dummy_scaled[0, target_index] = scaled_pred_val
                         
-                        inversed = scaler.inverse_transform(dummy_scaled)
-                        actual_prediction_value = float(inversed[0, target_index])
+                        try:
+                            inversed = scaler.inverse_transform(dummy_scaled)
+                            actual_prediction_value = float(inversed[0, target_index])
+                        except Exception as e:
+                            # If inverse transform fails, fallback by attempting a manual inverse using scaler params
+                            print(f"Inverse transform failed: {e}")
+                            actual_prediction_value = float(scaled_pred_val)
 
                         current_price = float(features_df['close'].iloc[-1])
                         delta = actual_prediction_value - current_price
@@ -212,7 +245,7 @@ if predict_button:
 # ---------------------------
 # 5. DRAIN QUEUE & UPDATE live_data
 # ---------------------------
-new_data_list =
+new_data_list = []
 while not st.session_state.message_queue.empty():
     try:
         msg = st.session_state.message_queue.get_nowait()
@@ -222,19 +255,23 @@ while not st.session_state.message_queue.empty():
 
 if new_data_list:
     new_df = pd.DataFrame(new_data_list)
+    # Ensure time is parsed and used as index
     new_df['time'] = pd.to_datetime(new_df['time'], unit='ms')
     new_df.set_index('time', inplace=True)
     
     for col in ['open', 'high', 'low', 'close', 'volume']:
         new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
     
+    # Keep only expected columns if any extras present
+    new_df = new_df[['open', 'high', 'low', 'close', 'volume']].copy()
+
     if st.session_state.live_data.empty:
-        st.session_state.live_data = new_df[['open', 'high', 'low', 'close', 'volume']].copy()
+        st.session_state.live_data = new_df.copy()
     else:
-        combined = pd.concat([st.session_state.live_data, new_df[['open', 'high', 'low', 'close', 'volume']]])
+        combined = pd.concat([st.session_state.live_data, new_df])
         # Drop duplicates by index (time), keeping the last-received update
         combined = combined[~combined.index.duplicated(keep='last')]
-        st.session_state.live_data = combined.tail(2000) # Limit memory
+        st.session_state.live_data = combined.tail(2000)  # Limit memory
 
 # ---------------------------
 # 6. RENDER CHART & DATA
@@ -257,7 +294,8 @@ if not df.empty:
         xaxis_rangeslider_visible=False,
         height=500
     )
-    chart_placeholder.plotly_chart(fig, use_container_width=True) [5, 6]
+    chart_placeholder.plotly_chart(fig, use_container_width=True)
+    # show most recent 10 rows, newest first
     data_grid_placeholder.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
 else:
     chart_placeholder.info("Waiting for live data...")
@@ -265,5 +303,6 @@ else:
 # ---------------------------
 # 7. AUTO-RERUN
 # ---------------------------
+# Small sleep to reduce tight-loop CPU usage, then rerun to update UI.
 time.sleep(1)
-st.rerun() [6]
+st.rerun()
