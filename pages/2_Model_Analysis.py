@@ -16,7 +16,7 @@ st.title("Model Performance & Analysis")
 st.header("Sentiment Analysis – FinBERT (Financial NLP Model)")
 st.markdown("""
 We do **not** use generic NLP tools such as TextBlob because they are not reliable in financial contexts.
-We instead use **FinBERT (`ProsusAI/finbert`)**, a transformer model trained on financial texts, achieving ~89% accuracy. [7, 8]
+We instead use **FinBERT (`ProsusAI/finbert`)**, a transformer model trained on financial texts, achieving ~89% accuracy.
 """)
 
 # Load sentiment model
@@ -33,11 +33,11 @@ with st.spinner("Loading FinBERT model..."):
 st.subheader("Test FinBERT on Example Headlines")
 
 test_headlines = [
-    "Bitcoin surges as investors react positively to new ETF approvals",
-    "Market uncertainty grows as crypto firms face regulatory pressure",
-    "BTC price stabilizes after a week of extreme volatility",
-    "Analysts predict bullish trend following strong institutional inflows",
-    "Major exchange reports technical issues, raising security concerns"
+    "Bitcoin price surges amid market optimism",
+    "Cryptocurrency market faces significant downturn",
+    "Experts remain neutral on the future of digital assets",
+    "New regulations could impact crypto trading negatively",
+    "Innovations in blockchain technology drive growth"
 ]
 
 df = pd.DataFrame(test_headlines, columns=["Headline"])
@@ -81,7 +81,7 @@ This is a **Stacked LSTM model** trained using 6 features:
 3.  `Low`
 4.  `Close`
 5.  `Volume`
-6.  `Sentiment Score` (Simulated during training, live added in real-time) [9, 10, 11, 12, 13, 14, 15, 16, 17]
+6.  `Sentiment Score` (Simulated during training, live added in real-time)
 
 It uses a **60-hour sliding window** to predict the **next-hour BTC price**.
 """)
@@ -96,8 +96,8 @@ st.markdown("""
 """)
 
 epochs = list(range(1, 51))
-train_loss = [1/x + 0.05 for x in epochs]
-val_loss = [1/x + 0.08 for x in epochs]
+train_loss = [1.0/x + 0.05 for x in epochs]
+val_loss = [1.0/x + 0.08 for x in epochs]
 
 loss_fig = go.Figure()
 loss_fig.add_trace(go.Scatter(

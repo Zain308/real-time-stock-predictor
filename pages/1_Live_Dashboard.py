@@ -20,13 +20,13 @@ from src.ml.preprocessing import TIMESTEPS, FEATURES
 # ---------------------------
 st.set_page_config(layout="wide", page_title="Live Crypto Dashboard")
 
-# Automatically refresh the page every 60 seconds (60000ms)
+# Automatically refresh the page every 60 seconds
 st_autorefresh(interval=60 * 1000, key="data_refresher")
 
 # ---------------------------
-# 2. INSTANT DATA LOADER (The Fix)
+# 2. INSTANT DATA LOADER (Stateless REST API)
 # ---------------------------
-@st.cache_data(ttl=60) # Cache data for 60 seconds so we don't spam the API
+@st.cache_data(ttl=60)
 def load_live_data(symbol="BINANCE:BTCUSDT"):
     """
     Fetches the last 120 minutes of data INSTANTLY from Finnhub.
@@ -50,7 +50,6 @@ def load_live_data(symbol="BINANCE:BTCUSDT"):
         start_t = end_t - (60 * 120) # 120 minutes ago
 
         # 4. Fetch Data
-        # '1' = 1 minute resolution
         res = finnhub_client.crypto_candles(symbol, '1', start_t, end_t)
         
         # 5. Validate Response
@@ -105,7 +104,7 @@ st.markdown("Fetching last 2 hours of market data...")
 # Load Data Immediately
 df = load_live_data()
 
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([4, 5])
 
 with col1:
     if not df.empty:
@@ -153,14 +152,12 @@ with col2:
                         st.metric("Live News Sentiment", f"{sentiment_score:.4f}")
 
                         # B. PREPARE DATA
-                        # Get exactly the last 60 candles
                         input_df = df.tail(TIMESTEPS).copy()
                         input_df = input_df[['open', 'high', 'low', 'close', 'volume']]
                         input_df['sentiment'] = sentiment_score
 
                         # C. SCALE & RESHAPE
                         scaled = scaler.transform(input_df)
-                        # Reshape to (1, 60, 6)
                         model_input = scaled.reshape((1, TIMESTEPS, FEATURES))
 
                         # D. PREDICT
@@ -168,7 +165,6 @@ with col2:
                         pred_value_scaled = float(prediction_scaled)
 
                         # E. INVERSE TRANSFORM
-                        # We need a dummy array of shape (1, 6) to reverse the scaler
                         dummy = np.zeros((1, FEATURES))
                         dummy = pred_value_scaled # Index 3 is 'close'
                         
