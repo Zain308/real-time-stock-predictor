@@ -7,7 +7,7 @@ import tensorflow as tf
 import plotly.graph_objects as go
 import finnhub
 import os
-from streamlit import st_autorefresh   # FIXED IMPORT
+from streamlit_autorefresh import st_autorefresh
 
 # Logger import handling
 try:
