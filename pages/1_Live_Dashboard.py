@@ -6,58 +6,61 @@ import plotly.graph_objects as go
 import requests
 import joblib
 import time
-import warnings
 from streamlit_autorefresh import st_autorefresh
 
-# Suppress harmless warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", message="Compiled the loaded model")
-
-# Safe imports
+# --- Safe imports ---
 try:
     from src.db_logger import log_prediction_to_db
-except:
-    def log_prediction_to_db(*args): pass
+except ImportError:
+    def log_prediction_to_db(df, pred): pass
 
 try:
     from src.data_ingestion.news_fetcher import fetch_company_news
-except:
+except ImportError:
     def fetch_company_news(q): return []
 
 try:
     from src.ml.sentiment import get_sentiment
-except:
+except ImportError:
     def get_sentiment(h): return 0.0, []
 
 from src.ml.preprocessing import TIMESTEPS, FEATURES
 
-# ====================== CONFIG ======================
-st.set_page_config(layout="wide", page_title="BTC Live Prediction")
-st_autorefresh(interval=60_000, key="refresh")
+# ====================== PAGE CONFIG ======================
+st.set_page_config(layout="wide", page_title="Live BTC/USD Prediction Engine")
+st_autorefresh(interval=60 * 1000, key="auto")
 
 st.title("Real-Time BTC/USD Prediction Engine")
-st.caption("Data: Kraken Public API • 1-Minute Candles • LSTM + Sentiment")
+st.caption("Data Source: Kraken Public API • Live 1-Minute Candles")
 
-# ====================== KRAKEN DATA ======================
+# ====================== KRAKEN DATA (CACHED & SAFE) ======================
 @st.cache_data(ttl=55, show_spinner=False)
-def get_kraken_data():
+def fetch_kraken_data() -> pd.DataFrame:
+    url = "https://api.kraken.com/0/public/OHLC"
+    params = {"pair": "XBTUSD", "interval": 1}
+    
     try:
-        url = "https://api.kraken.com/0/public/OHLC"
-        params = {"pair": "XBTUSD", "interval": 1}
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
-        if data["error"]:
+        if data.get("error"):
+            st.error(f"Kraken: {data['error']}")
             return pd.DataFrame()
 
-        key = [k for k in data["result"].keys() if k != "last"][0]
-        df = pd.DataFrame(data["result"][key], columns=[
+        pair_key = next((k for k in data["result"] if k != "last"), None)
+        if not pair_key:
+            return pd.DataFrame()
+
+        candles = data["result"][pair_key]
+        df = pd.DataFrame(candles, columns=[
             "time", "open", "high", "low", "close", "vwap", "volume", "count"
         ])
         df["time"] = pd.to_datetime(df["time"], unit="s")
         df.set_index("time", inplace=True)
-        df = df.astype(float)
+        df = df.astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
         return df[["open", "high", "low", "close", "volume"]].sort_index()
-    except:
+
+    except Exception as e:
+        st.error(f"Data error: {e}")
         return pd.DataFrame()
 
 # ====================== LOAD MODELS ======================
@@ -65,10 +68,8 @@ def get_kraken_data():
 def load_models():
     try:
         model = tf.keras.models.load_model("models/price_model.h5")
-        # Recompile to remove warning
-        model.compile(optimizer='adam', loss='mse')
         scaler = joblib.load("models/price_scaler.pkl")
-        st.success("Models loaded successfully")
+        st.success("Models loaded successfully!")
         return model, scaler
     except Exception as e:
         st.error(f"Model load failed: {e}")
@@ -77,18 +78,18 @@ def load_models():
 model, scaler = load_models()
 
 # ====================== FETCH DATA ======================
-df = get_kraken_data()
+df = fetch_kraken_data()
 
+# ====================== LAYOUT ======================
 col1, col2 = st.columns([1, 2])
 
-# ====================== CHART ======================
 with col1:
     if not df.empty:
-        chart = df.tail(60)
+        chart_df = df.tail(60)
         fig = go.Figure(go.Candlestick(
-            x=chart.index,
-            open=chart["open"], high=chart["high"],
-            low=chart["low"], close=chart["close"],
+            x=chart_df.index,
+            open=chart_df["open"], high=chart_df["high"],
+            low=chart_df["low"], close=chart_df["close"],
             increasing_line_color="#00ff88", decreasing_line_color="#ff3366"
         ))
         fig.update_layout(
@@ -98,25 +99,24 @@ with col1:
             xaxis_rangeslider_visible=False,
             margin=dict(l=10, r=10, t=40, b=10)
         )
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption(f"Last price: ${df['close'].iloc[-1]:,.2f} • Candles: {len(df)}")
+        st.plotly_chart(fig, width='stretch')
+        st.info(f"Loaded {len(df)} candles | Last: ${df['close'].iloc[-1]:,.2f}")
     else:
-        st.warning("Loading live data...")
+        st.warning("Loading market data...")
 
-# ====================== PREDICTION ======================
 with col2:
     st.subheader("AI Forecast")
 
     if df.empty:
-        st.info("Waiting for market data...")
+        st.info("Waiting for data...")
     elif len(df) < TIMESTEPS:
         st.warning(f"Need {TIMESTEPS} candles • Have {len(df)}")
     else:
-        if st.button("Predict Next Hour Price", type="primary", use_container_width=True):
+        if st.button("Predict Next Hour Close", type="primary", use_container_width=True):
             if not model or not scaler:
                 st.error("Models not loaded.")
             else:
-                with st.spinner("Predicting..."):
+                with st.spinner("Analyzing + predicting..."):
                     # Sentiment
                     sentiment = 0.0
                     try:
@@ -125,46 +125,47 @@ with col2:
                             sentiment, _ = get_sentiment(headlines)
                     except:
                         pass
-                    st.metric("News Sentiment", f"{sentiment:+.4f}")
+                    st.metric("Live News Sentiment", f"{sentiment:+.4f}")
 
-                    # Prepare exact feature names (this fixes the crash)
+                    # === FIX: Match EXACT column names from training ===
                     seq = df.tail(TIMESTEPS).copy()
                     seq = seq.rename(columns={
-                        "open": "Open", "high": "High", "low": "Low",
-                        "close": "Close", "volume": "Volume"
+                        'open': 'Open',
+                        'high': 'High',
+                        'low': 'Low',
+                        'close': 'Close',
+                        'volume': 'Volume'
                     })
-                    seq = seq[["Open", "High", "Low", "Close", "Volume"]]
-                    seq["Sentiment"] = sentiment
-
-                    # Transform using DataFrame (keeps names, no warning)
-                    scaled = scaler.transform(seq)
-                    X = scaled.reshape(1, TIMESTEPS, FEATURES)
+                    seq = seq[['Open', 'High', 'Low', 'Close', 'Volume']]
+                    seq['Sentiment'] = sentiment
 
                     # Predict
+                    X = scaler.transform(seq.values).reshape(1, TIMESTEPS, FEATURES)
                     pred_scaled = model.predict(X, verbose=0)[0][0]
 
                     # Inverse transform
                     dummy = np.zeros((1, FEATURES))
-                    dummy[0, 3] = pred_scaled
-                    predicted = scaler.inverse_transform(dummy)[0, 3]
+                    dummy[0, 3] = pred_scaled  # Close is index 3
+                    predicted_price = scaler.inverse_transform(dummy)[0, 3]
 
                     current = df["close"].iloc[-1]
-                    change = predicted - current
+                    change = predicted_price - current
                     pct = change / current * 100
 
                     st.metric(
                         "Predicted Price (+1h)",
-                        f"${predicted:,.2f}",
+                        f"${predicted_price:,.2f}",
                         f"{change:+.2f} ({pct:+.2f}%)"
                     )
 
+                    # Log
                     try:
-                        log_prediction_to_db(seq, predicted)
-                        st.success("Logged to DB")
+                        log_prediction_to_db(seq, predicted_price)
+                        st.success("Prediction logged!")
                     except:
                         pass
 
 # ====================== RAW DATA ======================
-with st.expander("View Live Feed"):
+with st.expander("View Real-Time Data Feed"):
     if not df.empty:
-        st.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
+        st.dataframe(df.tail(15).sort_index(ascending=False), width='stretch')
