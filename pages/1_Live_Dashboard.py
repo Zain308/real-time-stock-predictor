@@ -9,8 +9,10 @@ import finnhub
 import os
 from streamlit_autorefresh import st_autorefresh
 
-# Import our custom modules
-from src.logging import log_prediction_to_db
+# --- FIX: Updated import to match the new filename ---
+from src.db_logger import log_prediction_to_db
+# -----------------------------------------------------
+
 from src.data_ingestion.news_fetcher import fetch_company_news
 from src.ml.sentiment import get_sentiment
 from src.ml.preprocessing import TIMESTEPS, FEATURES
@@ -20,7 +22,7 @@ from src.ml.preprocessing import TIMESTEPS, FEATURES
 # ---------------------------
 st.set_page_config(layout="wide", page_title="Live Crypto Dashboard")
 
-# Automatically refresh the page every 60 seconds
+# Automatically refresh the page every 60 seconds (60000ms)
 st_autorefresh(interval=60 * 1000, key="data_refresher")
 
 # ---------------------------
@@ -104,7 +106,7 @@ st.markdown("Fetching last 2 hours of market data...")
 # Load Data Immediately
 df = load_live_data()
 
-col1, col2 = st.columns([4, 5])
+col1, col2 = st.columns([1, 2])
 
 with col1:
     if not df.empty:
