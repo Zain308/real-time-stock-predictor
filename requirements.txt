@@ -1,15 +1,13 @@
-streamlit
-pandas
-numpy
-scikit-learn
-tensorflow
-python-binance
-python-dotenv
-finnhub-python
-transformers
-torch
-psycopg2-binary
-SQLAlchemy
-plotly
-streamlit-autorefresh
-requests
+streamlit==1.38.0
+pandas==2.1.4
+numpy==1.26.4
+scikit-learn==1.3.2
+tensorflow==2.16.1  # Stable, no "free(): invalid pointer"
+joblib==1.4.2
+plotly==5.22.0
+requests==2.31.0
+streamlit-autorefresh==0.0.1
+transformers==4.44.0
+torch==2.1.2  # CPU-only, avoids GPU conflicts
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.23
