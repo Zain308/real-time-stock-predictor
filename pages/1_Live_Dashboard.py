@@ -25,7 +25,7 @@ from src.ml.preprocessing import TIMESTEPS, FEATURES
 # ---------------------------------------------------------
 st.set_page_config(layout="wide", page_title="Live Crypto Dashboard")
 
-# Refresh the page every 60 seconds to get the latest candle
+# Refresh the page every 60 seconds
 st_autorefresh(interval=60 * 1000, key="data_refresher")
 
 st.title("⚡ Real-Time BTC/USD Prediction Engine")
@@ -54,7 +54,6 @@ def fetch_kraken_data():
 
         # Kraken returns data under a dynamic key (usually XXBTZUSD)
         result_data = data['result']
-        # Find the key that contains the data list
         target_key = [k for k in result_data.keys() if k!= 'last']
         ohlc = result_data[target_key]
         
