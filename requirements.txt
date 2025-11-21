@@ -5,6 +5,7 @@ scikit-learn
 tensorflow
 python-binance
 python-dotenv
+finnhub-python
 transformers
 torch
 psycopg2-binary
@@ -12,4 +13,3 @@ SQLAlchemy
 plotly
 streamlit-autorefresh
 requests
-finnhub-python

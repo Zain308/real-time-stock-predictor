@@ -8,12 +8,11 @@ import joblib
 import time
 from streamlit_autorefresh import st_autorefresh
 
-# --- FIX: Updated import to match the new filename ---
+# --- FIX: Updated import to use the new filename ---
 try:
     from src.db_logger import log_prediction_to_db
 except ImportError:
-    # Fallback safety if file isn't renamed yet
-    pass
+    pass # Handle case where file might be missing during deploy
 
 from src.data_ingestion.news_fetcher import fetch_company_news
 from src.ml.sentiment import get_sentiment
@@ -24,7 +23,7 @@ from src.ml.preprocessing import TIMESTEPS, FEATURES
 # ---------------------------------------------------------
 st.set_page_config(layout="wide", page_title="Live Crypto Dashboard")
 
-# Refresh the page every 60 seconds to get the latest candle
+# Refresh the page every 60 seconds
 st_autorefresh(interval=60 * 1000, key="data_refresher")
 
 st.title("⚡ Real-Time BTC/USD Prediction Engine")
@@ -33,7 +32,7 @@ st.caption("Data Source: Kraken Public API (Direct Exchange Feed)")
 # ---------------------------------------------------------
 # 2. DATA INGESTION (The Fix: Kraken Public API)
 # ---------------------------------------------------------
-@st.cache_data(ttl=60) # Cache for 60s to prevent rate limits
+@st.cache_data(ttl=60) # Cache for 60s
 def fetch_kraken_data():
     """
     Fetches the last 720 minutes (12 hours) of BTC/USD data from Kraken.
@@ -51,8 +50,11 @@ def fetch_kraken_data():
             st.error(f"Kraken API Error: {data['error']}")
             return pd.DataFrame()
 
-        # Kraken returns data under the key 'XXBTZUSD'
-        ohlc = data['result']
+        # Kraken returns data under a dynamic key (usually XXBTZUSD)
+        # We get the first key in 'result' that isn't 'last'
+        result_data = data['result']
+        target_key = [k for k in result_data.keys() if k!= 'last']
+        ohlc = result_data[target_key]
         
         # Convert to DataFrame
         # Columns: [time, open, high, low, close, vwap, volume, count]
@@ -82,7 +84,7 @@ def load_models():
         model = tf.keras.models.load_model('models/price_model.h5')
         scaler = joblib.load('models/price_scaler.pkl')
     except Exception as e:
-        st.error("Models not found. Please run 'python -m src.ml.prediction' locally to generate them.")
+        st.error(f"Models not found. Error: {e}")
     return model, scaler
 
 model, scaler = load_models()
@@ -93,7 +95,7 @@ model, scaler = load_models()
 # Load data instantly - NO WAITING
 df = fetch_kraken_data()
 
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([4, 5])
 
 with col1:
     if not df.empty:
@@ -128,7 +130,8 @@ with col2:
     elif len(df) < TIMESTEPS:
         st.warning(f"Gathering data... ({len(df)}/{TIMESTEPS})")
     else:
-        if st.button("Predict Next Close", type="primary", use_container_width=True):
+        # FIX: Removed 'use_container_width' from button too
+        if st.button("Predict Next Close", type="primary"):
             if model is None:
                 st.error("Models missing.")
             else:
