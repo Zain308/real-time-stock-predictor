@@ -1,306 +1,195 @@
 import streamlit as st
-import queue
-import threading
 import time
 import pandas as pd
 import numpy as np
 import joblib
 import tensorflow as tf
 import plotly.graph_objects as go
-from streamlit.runtime.scriptrunner import add_script_run_ctx
-from src.logging import log_prediction_to_db
+import finnhub
+import os
+from streamlit_autorefresh import st_autorefresh
 
-# Imports for our ML models and news
+# Import our custom modules
+from src.logging import log_prediction_to_db
 from src.data_ingestion.news_fetcher import fetch_company_news
 from src.ml.sentiment import get_sentiment
 from src.ml.preprocessing import TIMESTEPS, FEATURES
 
-# Imports for the NEW Finnhub Poller
-import finnhub
-import datetime
-import os
+# ---------------------------
+# 1. CONFIGURATION & AUTO-REFRESH
+# ---------------------------
+st.set_page_config(layout="wide", page_title="Live Crypto Dashboard")
+
+# Automatically refresh the page every 60 seconds (60000ms)
+st_autorefresh(interval=60 * 1000, key="data_refresher")
 
 # ---------------------------
-# Price Poller (Using Finnhub)
+# 2. INSTANT DATA LOADER (The Fix)
 # ---------------------------
-class FinnhubPoller:
+@st.cache_data(ttl=60) # Cache data for 60 seconds so we don't spam the API
+def load_live_data(symbol="BINANCE:BTCUSDT"):
     """
-    Polls Finnhub for the latest 1-minute BTC-USD candle
-    and pushes a simple dict into the provided queue.
+    Fetches the last 120 minutes of data INSTANTLY from Finnhub.
+    No waiting for a buffer to fill.
     """
-    def __init__(self, message_queue, symbol="BINANCE:BTCUSDT", poll_interval=15):
-        self.queue = message_queue
-        self.symbol = symbol
-        self.poll_interval = poll_interval
-        self._stopped = False
-        try:
-            # Load API key from Streamlit Secrets or env
-            api_key = st.secrets.get("FINNHUB_API_KEY") if hasattr(st, "secrets") else None
-            if not api_key:
-                api_key = os.environ.get("FINNHUB_API_KEY")
+    try:
+        # 1. Get API Key
+        api_key = st.secrets.get("FINNHUB_API_KEY")
+        if not api_key:
+            api_key = os.environ.get("FINNHUB_API_KEY")
+        
+        if not api_key:
+            st.error("API Key not found. Please check secrets.toml")
+            return pd.DataFrame()
 
-            if not api_key:
-                raise ValueError("Finnhub API key not found in streamlit secrets or environment.")
+        # 2. Initialize Client
+        finnhub_client = finnhub.Client(api_key=api_key)
+        
+        # 3. Calculate Time Window (Last 2 hours)
+        end_t = int(time.time())
+        start_t = end_t - (60 * 120) # 120 minutes ago
 
-            # Create client
-            self.finnhub_client = finnhub.Client(api_key=api_key)
-            print("FinnhubPoller initialized.")
-        except Exception as e:
-            print(f"Error initializing Finnhub client: {e}")
-            self.finnhub_client = None
+        # 4. Fetch Data
+        # '1' = 1 minute resolution
+        res = finnhub_client.crypto_candles(symbol, '1', start_t, end_t)
+        
+        # 5. Validate Response
+        if res.get('s')!= 'ok':
+            st.warning("Finnhub API returned no data (market might be quiet).")
+            return pd.DataFrame()
+        
+        if 't' not in res or not res['t']:
+            return pd.DataFrame()
 
-    def stop(self):
-        self._stopped = True
+        # 6. Build DataFrame
+        df = pd.DataFrame({
+            'time': [pd.to_datetime(t, unit='s') for t in res['t']],
+            'open': res['o'],
+            'high': res['h'],
+            'low': res['l'],
+            'close': res['c'],
+            'volume': res['v']
+        })
+        df.set_index('time', inplace=True)
+        
+        # Clean duplicates
+        df = df[~df.index.duplicated(keep='last')].sort_index()
+        
+        return df
 
-    def _fetch_latest_minute(self):
-        """
-        Fetch the last 5 minutes of candle data to get the latest closed candle.
-        """
-        if self.finnhub_client is None:
-            return None
-
-        try:
-            to_ts = int(time.time())
-            from_ts = to_ts - (60 * 5)  # 5 minutes ago
-
-            # Call Finnhub API for 1-minute crypto candles
-            res = self.finnhub_client.crypto_candles(self.symbol, '1', from_ts, to_ts)
-
-            if res.get('s') != 'ok' or 't' not in res or not res['t']:
-                print(f"FinnhubPoller: No data received. Status: {res.get('s')}")
-                return None
-
-            last_idx = -1
-            item = {
-                "time": int(res['t'][last_idx] * 1000),  # Convert from seconds to milliseconds
-                "open": float(res['o'][last_idx]),
-                "high": float(res['h'][last_idx]),
-                "low": float(res['l'][last_idx]),
-                "close": float(res['c'][last_idx]),
-                "volume": float(res['v'][last_idx])
-            }
-            return item
-        except Exception as e:
-            print(f"FinnhubPoller fetch error: {e}")
-            return None
-
-    def start_polling(self):
-        """
-        Main background loop for the poller thread.
-        """
-        print("FinnhubPoller thread started.")
-        while not self._stopped:
-            item = self._fetch_latest_minute()
-
-            if item is not None:
-                print(f"Poller fetched: {item}")  # This will show in the logs
-                try:
-                    self.queue.put_nowait(item)
-                except queue.Full:
-                    pass
-
-            time.sleep(self.poll_interval)
-        print("Polling thread stopped.")
-
+    except Exception as e:
+        st.error(f"Data Loading Error: {e}")
+        return pd.DataFrame()
 
 # ---------------------------
-# 1. SESSION STATE & THREAD INITIALIZATION
-# ---------------------------
-if "message_queue" not in st.session_state:
-    st.session_state.message_queue = queue.Queue(maxsize=2000)
-
-if "live_data" not in st.session_state:
-    st.session_state.live_data = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
-
-if "poller_thread" not in st.session_state:
-    # Initialize and start the new Finnhub poller
-    poller = FinnhubPoller(st.session_state.message_queue, symbol="BINANCE:BTCUSDT", poll_interval=15)
-    t = threading.Thread(target=poller.start_polling, daemon=True)
-    add_script_run_ctx(t)
-    t.start()
-    st.session_state.poller_thread = t
-    st.session_state.poller = poller
-    print("Price poller thread registered in session state.")
-
-
-# ---------------------------
-# 2. LOAD MODELS (CACHED)
+# 3. MODEL LOADER
 # ---------------------------
 @st.cache_resource
 def load_models():
-    """Loads LSTM model and scaler. Returns (model, scaler) or (None, None)."""
     model, scaler = None, None
     try:
         model = tf.keras.models.load_model('models/price_model.h5')
-    except Exception as e:
-        print(f"Error loading LSTM model: {e}")
-    try:
         scaler = joblib.load('models/price_scaler.pkl')
     except Exception as e:
-        print(f"Error loading scaler: {e}")
-
-    if model and scaler:
-        print("Models loaded successfully.")
+        st.error(f"Error loading models. Run 'python src/ml/prediction.py' locally first. Error: {e}")
     return model, scaler
 
 model, scaler = load_models()
 
 # ---------------------------
-# 3. UI LAYOUT
+# 4. DASHBOARD UI
 # ---------------------------
-st.title("Live BTC/USDT Price & Prediction Dashboard")
+st.title("⚡ Live BTC/USDT Prediction Engine")
+st.markdown("Fetching last 2 hours of market data...")
 
-col1, col2 = st.columns([7, 6])
+# Load Data Immediately
+df = load_live_data()
+
+col1, col2 = st.columns([1, 2])
 
 with col1:
-    chart_placeholder = st.empty()
+    if not df.empty:
+        # Draw Candlestick Chart
+        fig = go.Figure(data=[go.Candlestick(
+            x=df.index,
+            open=df['open'], high=df['high'],
+            low=df['low'], close=df['close'],
+            increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+        )])
+        fig.update_layout(
+            title='Real-Time Price Action (1m Candles)',
+            yaxis_title='Price (USDT)',
+            template="plotly_dark",
+            height=500,
+            xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Waiting for API data...")
 
 with col2:
-    st.subheader("On-Demand Prediction")
-    predict_button = st.button("Predict Next Hour Price")
-    prediction_placeholder = st.empty()
-    st.subheader("Live Sentiment (Last 24h)")
-    sentiment_placeholder = st.empty()
-
-data_grid_placeholder = st.empty()
-
-# ---------------------------
-# 4. PREDICTION LOGIC
-# ---------------------------
-if predict_button:
-    if model is None or scaler is None:
-        prediction_placeholder.error("Models are not loaded. Cannot predict.")
+    st.subheader("🤖 AI Prediction")
+    
+    if df.empty:
+        st.warning("Loading data...")
+    elif len(df) < TIMESTEPS:
+        st.warning(f"Need {TIMESTEPS} candles. Have {len(df)}.")
     else:
-        with st.spinner("Running prediction..."):
-            try:
-                # Check if we have enough data (TIMESTEPS)
-                if len(st.session_state.live_data) < TIMESTEPS:
-                    prediction_placeholder.warning(f"Not enough data. Need {TIMESTEPS} data points to predict.")
-                else:
-                    # Get live sentiment
-                    live_sentiment_score = 0.0
+        predict_btn = st.button("Predict Next Hour", type="primary")
+        
+        if predict_btn:
+            if model is None or scaler is None:
+                st.error("Models missing.")
+            else:
+                with st.spinner("Analyzing market sentiment & price action..."):
                     try:
-                        headlines = fetch_company_news("CRYPTO")
-                        live_sentiment_score, _ = get_sentiment(headlines)
-                    except Exception as e:
-                        print(f"Sentiment fetch error: {e}")
-
-                    sentiment_placeholder.write(f"Current News Sentiment: {live_sentiment_score:.4f}")
-
-                    # Prepare features (last TIMESTEPS rows)
-                    features_df = st.session_state.live_data.tail(TIMESTEPS)[['open', 'high', 'low', 'close', 'volume']].copy()
-                    features_df['sentiment'] = live_sentiment_score
-
-                    # Correct feature-dimension check
-                    if features_df.shape[1] != FEATURES:
-                        prediction_placeholder.error(f"Feature mismatch: Expected {FEATURES}, got {features_df.shape[1]}.")
-                    else:
-                        # Ensure numeric and handle NaNs
-                        features_df = features_df.astype(float).fillna(method='ffill').fillna(method='bfill').fillna(0.0)
-
-                        # Scale and reshape
-                        scaled_data = scaler.transform(features_df.values)  # shape (TIMESTEPS, FEATURES)
-                        input_data = scaled_data.reshape((1, TIMESTEPS, FEATURES))
-
-                        # Predict
-                        scaled_prediction = model.predict(input_data, verbose=0)
-                        # Extract single scalar prediction robustly
+                        # A. GET SENTIMENT
                         try:
-                            scaled_pred_val = float(np.ravel(scaled_prediction)[0])
-                        except Exception:
-                            scaled_pred_val = float(np.asarray(scaled_prediction).reshape(-1)[0])
+                            headlines = fetch_company_news("CRYPTO")
+                            sentiment_score, _ = get_sentiment(headlines)
+                        except:
+                            sentiment_score = 0.0 # Neutral fallback
+                        
+                        st.metric("Live News Sentiment", f"{sentiment_score:.4f}")
 
-                        # Inverse transform to get real dollar value
-                        dummy_scaled = np.zeros((1, FEATURES), dtype=float)
-                        target_index = 3  # 'close' is at index 3
-                        dummy_scaled[0, target_index] = scaled_pred_val
+                        # B. PREPARE DATA
+                        # Get exactly the last 60 candles
+                        input_df = df.tail(TIMESTEPS).copy()
+                        input_df = input_df[['open', 'high', 'low', 'close', 'volume']]
+                        input_df['sentiment'] = sentiment_score
 
-                        try:
-                            inversed = scaler.inverse_transform(dummy_scaled)
-                            actual_prediction_value = float(inversed[0, target_index])
-                        except Exception as e:
-                            print(f"Inverse transform failed: {e}")
-                            actual_prediction_value = float(scaled_pred_val)
+                        # C. SCALE & RESHAPE
+                        scaled = scaler.transform(input_df)
+                        # Reshape to (1, 60, 6)
+                        model_input = scaled.reshape((1, TIMESTEPS, FEATURES))
 
-                        current_price = float(features_df['close'].iloc[-1])
-                        delta = actual_prediction_value - current_price
+                        # D. PREDICT
+                        prediction_scaled = model.predict(model_input)
+                        pred_value_scaled = float(prediction_scaled)
 
-                        prediction_placeholder.metric(
-                            label="Predicted Price (Next Hour)",
-                            value=f"${actual_prediction_value:,.2f}",
-                            delta=f"${delta:,.2f} vs current"
+                        # E. INVERSE TRANSFORM
+                        # We need a dummy array of shape (1, 6) to reverse the scaler
+                        dummy = np.zeros((1, FEATURES))
+                        dummy = pred_value_scaled # Index 3 is 'close'
+                        
+                        real_price = scaler.inverse_transform(dummy)
+                        
+                        # F. DISPLAY
+                        current_price = float(df['close'].iloc[-1])
+                        diff = real_price - current_price
+                        
+                        st.metric(
+                            label="Predicted Close (Next Hour)",
+                            value=f"${real_price:,.2f}",
+                            delta=f"{diff:+.2f}"
                         )
 
-                        # Log to DB
-                        try:
-                            log_prediction_to_db(features_df, actual_prediction_value)
-                        except Exception as e:
-                            print(f"Logging error: {e}")
+                        # G. LOGGING
+                        log_prediction_to_db(input_df, real_price)
 
-            except Exception as e:
-                prediction_placeholder.error(f"Prediction error: {e}")
+                    except Exception as e:
+                        st.error(f"Prediction Failed: {e}")
 
-
-# ---------------------------
-# 5. DRAIN QUEUE & UPDATE live_data
-# ---------------------------
-new_data_list = []
-while not st.session_state.message_queue.empty():
-    try:
-        msg = st.session_state.message_queue.get_nowait()
-        new_data_list.append(msg)
-    except queue.Empty:
-        break
-
-if new_data_list:
-    new_df = pd.DataFrame(new_data_list)
-    new_df['time'] = pd.to_datetime(new_df['time'], unit='ms')
-    new_df.set_index('time', inplace=True)
-
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        new_df[col] = pd.to_numeric(new_df[col], errors='coerce')
-
-    # Keep only expected columns
-    new_df = new_df[['open', 'high', 'low', 'close', 'volume']].copy()
-
-    if st.session_state.live_data.empty:
-        st.session_state.live_data = new_df.copy()
-    else:
-        combined = pd.concat([st.session_state.live_data, new_df])
-        # Drop duplicates by index (time), keeping the last-received update
-        combined = combined[~combined.index.duplicated(keep='last')]
-        st.session_state.live_data = combined.tail(2000)  # Limit memory
-
-
-# ---------------------------
-# 6. RENDER CHART & DATA
-# ---------------------------
-df = st.session_state.live_data.copy()
-if not df.empty:
-    fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        increasing_line_color='green',
-        decreasing_line_color='red',
-    )])
-    fig.update_layout(
-        title='Live BTC/USDT (1-Minute Klines from Finnhub)',
-        xaxis_title='Time',
-        yaxis_title='Price (USDT)',
-        xaxis_rangeslider_visible=False,
-        height=500
-    )
-    chart_placeholder.plotly_chart(fig, use_container_width=True)
-    data_grid_placeholder.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
-else:
-    chart_placeholder.info("Waiting for live data...")
-
-
-# ---------------------------
-# 7. AUTO-RERUN
-# ---------------------------
-time.sleep(1)
-st.rerun()
+# Display Raw Data
+with st.expander("View Raw Data"):
+    st.dataframe(df.sort_index(ascending=False), use_container_width=True)
