@@ -1,71 +1,80 @@
 import streamlit as st
-import time
 import pandas as pd
 import numpy as np
-import joblib
 import tensorflow as tf
 import plotly.graph_objects as go
-import finnhub
-import os
-from streamlit_autorefresh import st_autorefresh # type: ignore
+import requests
+import joblib
+import time
+from streamlit_autorefresh import st_autorefresh
 
-# --- FIX: Import from the NEW db_logger file ---
-from src.db_logger import log_prediction_to_db
+# --- FIX: Updated import to match the new filename ---
+try:
+    from src.db_logger import log_prediction_to_db
+except ImportError:
+    # Fallback safety if file isn't renamed yet
+    pass
 
 from src.data_ingestion.news_fetcher import fetch_company_news
 from src.ml.sentiment import get_sentiment
 from src.ml.preprocessing import TIMESTEPS, FEATURES
 
-# ---------------------------
-# 1. CONFIGURATION & AUTO-REFRESH
-# ---------------------------
+# ---------------------------------------------------------
+# 1. PAGE CONFIG & AUTO-REFRESH
+# ---------------------------------------------------------
 st.set_page_config(layout="wide", page_title="Live Crypto Dashboard")
+
+# Refresh the page every 60 seconds to get the latest candle
 st_autorefresh(interval=60 * 1000, key="data_refresher")
 
-# ---------------------------
-# 2. INSTANT DATA LOADER
-# ---------------------------
-@st.cache_data(ttl=60)
-def load_live_data(symbol="BINANCE:BTCUSDT"):
+st.title("⚡ Real-Time BTC/USD Prediction Engine")
+st.caption("Data Source: Kraken Public API (Direct Exchange Feed)")
+
+# ---------------------------------------------------------
+# 2. DATA INGESTION (The Fix: Kraken Public API)
+# ---------------------------------------------------------
+@st.cache_data(ttl=60) # Cache for 60s to prevent rate limits
+def fetch_kraken_data():
+    """
+    Fetches the last 720 minutes (12 hours) of BTC/USD data from Kraken.
+    No API Key required. No 403 Errors.
+    """
+    # Kraken uses 'XBT' instead of 'BTC'
+    url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1"
+    
     try:
-        # Get API Key
-        api_key = st.secrets.get("FINNHUB_API_KEY")
-        if not api_key:
-            api_key = os.environ.get("FINNHUB_API_KEY")
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        data = response.json()
         
-        if not api_key:
-            st.error("API Key not found. Please add FINNHUB_API_KEY to Streamlit Secrets.")
+        if data.get('error'):
+            st.error(f"Kraken API Error: {data['error']}")
             return pd.DataFrame()
 
-        finnhub_client = finnhub.Client(api_key=api_key)
+        # Kraken returns data under the key 'XXBTZUSD'
+        ohlc = data['result']
         
-        # Calculate Time Window (Last 2 hours)
-        to_ts = int(time.time())
-        from_ts = to_ts - (60 * 120)
-
-        res = finnhub_client.crypto_candles(symbol, '1', from_ts, to_ts)
+        # Convert to DataFrame
+        # Columns: [time, open, high, low, close, vwap, volume, count]
+        df = pd.DataFrame(ohlc, columns=['time', 'open', 'high', 'low', 'close', 'vwap', 'volume', 'count'])
         
-        if res.get('s')!= 'ok':
-            return pd.DataFrame()
-
-        df = pd.DataFrame({
-            'time': [pd.to_datetime(t, unit='s') for t in res['t']],
-            'open': res['o'],
-            'high': res['h'],
-            'low': res['l'],
-            'close': res['c'],
-            'volume': res['v']
-        })
+        # Clean types
+        df['time'] = pd.to_datetime(df['time'], unit='s')
         df.set_index('time', inplace=True)
+        
+        cols = ['open', 'high', 'low', 'close', 'volume']
+        for c in cols:
+            df[c] = df[c].astype(float)
+            
         return df.sort_index()
 
     except Exception as e:
-        st.error(f"Data Error: {e}")
+        st.error(f"Data Loading Failed: {e}")
         return pd.DataFrame()
 
-# ---------------------------
-# 3. LOAD MODELS
-# ---------------------------
+# ---------------------------------------------------------
+# 3. MODEL LOADING
+# ---------------------------------------------------------
 @st.cache_resource
 def load_models():
     model, scaler = None, None
@@ -73,88 +82,104 @@ def load_models():
         model = tf.keras.models.load_model('models/price_model.h5')
         scaler = joblib.load('models/price_scaler.pkl')
     except Exception as e:
-        st.error(f"Error loading models: {e}")
+        st.error("Models not found. Please run 'python -m src.ml.prediction' locally to generate them.")
     return model, scaler
 
 model, scaler = load_models()
 
-# ---------------------------
-# 4. DASHBOARD UI
-# ---------------------------
-st.title("⚡ Live BTC/USDT Prediction Engine")
-st.caption("Data Source: Finnhub (Updates every 60s)")
-
-df = load_live_data()
+# ---------------------------------------------------------
+# 4. DASHBOARD VISUALIZATION
+# ---------------------------------------------------------
+# Load data instantly - NO WAITING
+df = fetch_kraken_data()
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     if not df.empty:
+        # Show last 60 candles
+        chart_data = df.tail(60)
+        
         fig = go.Figure(data=[go.Candlestick(
-            x=df.index,
-            open=df['open'], high=df['high'],
-            low=df['low'], close=df['close'],
-            increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+            x=chart_data.index,
+            open=chart_data['open'], high=chart_data['high'],
+            low=chart_data['low'], close=chart_data['close'],
+            increasing_line_color='#00C805', decreasing_line_color='#FF3B30'
         )])
+        
         fig.update_layout(
-            title='Real-Time Price Action',
-            yaxis_title='Price (USDT)',
+            title='Live Price Action (1m Interval)',
+            yaxis_title='Price (USD)',
             template="plotly_dark",
             height=500,
-            xaxis_rangeslider_visible=False
+            xaxis_rangeslider_visible=False,
+            margin=dict(l=0, r=0, t=40, b=0)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        # FIX: Replaced deprecated 'use_container_width' with 'width="stretch"'
+        st.plotly_chart(fig, width="stretch") 
     else:
-        st.info("Waiting for API data...")
+        st.warning("Unable to load market data. Retrying...")
 
 with col2:
-    st.subheader("🤖 AI Prediction")
+    st.subheader("🔮 AI Forecast")
     
     if df.empty:
-        st.warning("Loading...")
+        st.info("Loading...")
     elif len(df) < TIMESTEPS:
-        st.warning(f"Need {TIMESTEPS} candles. Have {len(df)}.")
+        st.warning(f"Gathering data... ({len(df)}/{TIMESTEPS})")
     else:
-        if st.button("Predict Next Hour", type="primary"):
-            if model and scaler:
-                with st.spinner("Analyzing..."):
+        if st.button("Predict Next Close", type="primary", use_container_width=True):
+            if model is None:
+                st.error("Models missing.")
+            else:
+                with st.spinner("Analyzing market patterns..."):
                     try:
-                        # Sentiment
+                        # 1. Sentiment (Safe Mode)
+                        sentiment_score = 0.0
                         try:
                             headlines = fetch_company_news("CRYPTO")
-                            sentiment, _ = get_sentiment(headlines)
-                        except:
-                            sentiment = 0.0
+                            if headlines:
+                                sentiment_score, _ = get_sentiment(headlines)
+                        except Exception:
+                            pass # Fail silently to neutral if news API fails
                         
-                        st.metric("Sentiment Score", f"{sentiment:.4f}")
+                        st.metric("News Sentiment", f"{sentiment_score:.4f}", help="-1 (Neg) to +1 (Pos)")
 
-                        # Prepare Data
+                        # 2. Prepare Data
                         input_df = df.tail(TIMESTEPS).copy()
                         input_df = input_df[['open', 'high', 'low', 'close', 'volume']]
-                        input_df['sentiment'] = sentiment
+                        input_df['sentiment'] = sentiment_score
 
-                        # Predict
+                        # 3. Predict
                         scaled = scaler.transform(input_df)
                         model_input = scaled.reshape((1, TIMESTEPS, FEATURES))
-                        prediction = model.predict(model_input)
-                        
-                        # Inverse Transform
+                        prediction = float(model.predict(model_input))
+
+                        # 4. Inverse Transform
                         dummy = np.zeros((1, FEATURES))
-                        dummy = float(prediction) # 3 is close index
+                        dummy = prediction # Index 3 is 'close'
                         real_price = scaler.inverse_transform(dummy)
                         
-                        curr = float(df['close'].iloc[-1])
-                        diff = real_price - curr
+                        # 5. Display
+                        current = df['close'].iloc[-1]
+                        diff = real_price - current
                         
-                        st.metric("Predicted Close", f"${real_price:,.2f}", f"{diff:+.2f}")
-
-                        # Log
+                        st.metric(
+                            label="Predicted Price (+1hr)", 
+                            value=f"${real_price:,.2f}", 
+                            delta=f"{diff:+.2f}"
+                        )
+                        
+                        # 6. Log
                         try:
                             log_prediction_to_db(input_df, real_price)
                         except:
                             pass
-                    except Exception as e:
-                        st.error(f"Error: {e}")
 
-with st.expander("View Raw Data"):
-    st.dataframe(df.sort_index(ascending=False), use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Prediction Error: {e}")
+
+# Raw Data Expander
+with st.expander("🔍 View Real-Time Data Feed"):
+    if not df.empty:
+        st.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
