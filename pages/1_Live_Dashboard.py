@@ -8,11 +8,13 @@ import joblib
 import time
 from streamlit_autorefresh import st_autorefresh
 
-# --- FIX: Updated import to use the new filename ---
+# --- SAFETY CHECK: Import logger ---
 try:
     from src.db_logger import log_prediction_to_db
 except ImportError:
-    pass # Handle case where file might be missing during deploy
+    # If the file is missing, we define a dummy function so the app doesn't crash
+    def log_prediction_to_db(df, pred):
+        pass
 
 from src.data_ingestion.news_fetcher import fetch_company_news
 from src.ml.sentiment import get_sentiment
@@ -53,6 +55,7 @@ def fetch_kraken_data():
         # Kraken returns data under a dynamic key (usually XXBTZUSD)
         # We get the first key in 'result' that isn't 'last'
         result_data = data['result']
+        # Find the key that contains the data list
         target_key = [k for k in result_data.keys() if k!= 'last']
         ohlc = result_data[target_key]
         
@@ -95,7 +98,7 @@ model, scaler = load_models()
 # Load data instantly - NO WAITING
 df = fetch_kraken_data()
 
-col1, col2 = st.columns([4, 5])
+col1, col2 = st.columns([2, 1])
 
 with col1:
     if not df.empty:
@@ -117,8 +120,7 @@ with col1:
             xaxis_rangeslider_visible=False,
             margin=dict(l=0, r=0, t=40, b=0)
         )
-        # FIX: Replaced deprecated 'use_container_width' with 'width="stretch"'
-        st.plotly_chart(fig, width="stretch") 
+        st.plotly_chart(fig, use_container_width=True) 
     else:
         st.warning("Unable to load market data. Retrying...")
 
@@ -130,7 +132,6 @@ with col2:
     elif len(df) < TIMESTEPS:
         st.warning(f"Gathering data... ({len(df)}/{TIMESTEPS})")
     else:
-        # FIX: Removed 'use_container_width' from button too
         if st.button("Predict Next Close", type="primary"):
             if model is None:
                 st.error("Models missing.")
