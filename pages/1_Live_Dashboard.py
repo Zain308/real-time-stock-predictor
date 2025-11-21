@@ -12,7 +12,6 @@ from streamlit_autorefresh import st_autorefresh
 try:
     from src.db_logger import log_prediction_to_db
 except ImportError:
-    # Fallback safety if file isn't renamed yet
     def log_prediction_to_db(df, pred):
         pass
 
@@ -32,15 +31,12 @@ st.title("⚡ Real-Time BTC/USD Prediction Engine")
 st.caption("Data Source: Kraken Public API (Direct Exchange Feed)")
 
 # ---------------------------------------------------------
-# 2. DATA INGESTION (The Fix: Kraken Public API)
+# 2. DATA INGESTION (Removed Cache to Fix Hash Error)
 # ---------------------------------------------------------
-@st.cache_data(ttl=60) # Cache for 60s to prevent rate limits
 def fetch_kraken_data():
     """
     Fetches the last 720 minutes (12 hours) of BTC/USD data from Kraken.
-    No API Key required. No 403 Errors.
     """
-    # Kraken uses 'XBT' instead of 'BTC'
     url = "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1"
     
     try:
@@ -54,6 +50,7 @@ def fetch_kraken_data():
 
         # Kraken returns data under a dynamic key (usually XXBTZUSD)
         result_data = data['result']
+        # Find the key that contains the data list (ignore 'last')
         target_key = [k for k in result_data.keys() if k!= 'last']
         ohlc = result_data[target_key]
         
@@ -93,7 +90,7 @@ model, scaler = load_models()
 # ---------------------------------------------------------
 # 4. DASHBOARD VISUALIZATION
 # ---------------------------------------------------------
-# Load data instantly - NO WAITING
+# Load data instantly
 df = fetch_kraken_data()
 
 col1, col2 = st.columns([1, 2])
@@ -143,7 +140,7 @@ with col2:
                             if headlines:
                                 sentiment_score, _ = get_sentiment(headlines)
                         except Exception:
-                            pass # Fail silently to neutral if news API fails
+                            pass 
                         
                         st.metric("News Sentiment", f"{sentiment_score:.4f}", help="-1 (Neg) to +1 (Pos)")
 
@@ -160,8 +157,7 @@ with col2:
 
                         # 4. Inverse Transform
                         dummy = np.zeros((1, FEATURES))
-                        # Index 3 is 'close' price in our 6-feature set
-                        dummy = prediction 
+                        dummy = prediction # Index 3 is 'close'
                         real_price = scaler.inverse_transform(dummy)
                         
                         # 5. Display
