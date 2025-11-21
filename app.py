@@ -1,7 +1,7 @@
 # =====================================================
 #   HOMEPAGE – Real-Time Crypto AI Prediction Platform
 #   The most beautiful entry point your users will ever see
-#   Author: Zain308 | Status: PRODUCTION PERFECTION
+#   Author: Zain | Status: PRODUCTION PERFECTION
 # =====================================================
 
 import streamlit as st
@@ -38,7 +38,7 @@ st.markdown("""
 # =====================================================
 # HERO SECTION – EPIC WELCOME
 # =====================================================
-st.markdown("<h1 class='big-title'>₿ ZAIN308 AI</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='big-title'>₿ ZAIN AI</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Real-Time Bitcoin Price & Sentiment Prediction Engine</p>", unsafe_allow_html=True)
 
 st.markdown(f"""
@@ -48,7 +48,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # =====================================================
-# LIVE STATS BANNER (Auto-updating)
+# LIVE STATS BANNER
 # =====================================================
 col1, col2, col3, col4 = st.columns(4)
 with col1:
@@ -144,7 +144,7 @@ st.markdown("""
 
 st.markdown(f"""
 <div class="footer">
-    <p>Built with passion & precision by <strong>Zain308</strong> • {datetime.now().strftime('%B %Y')}</p>
+    <p>Built with passion & precision by <strong>Zain</strong> • {datetime.now().strftime('%B %Y')}</p>
     <p>This is not just a project — it's a <strong>real financial AI engine</strong>.</p>
     <p>Now go make some money.</p>
 </div>
